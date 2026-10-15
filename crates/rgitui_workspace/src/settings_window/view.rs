@@ -19,7 +19,7 @@ use gpui::{
     ScrollHandle, SharedString, Task, Window,
 };
 use rgitui_ai::catalog::{CatalogSource, ModelInfo};
-use rgitui_i18n::{t, tp};
+use rgitui_i18n::{key, t, tp};
 use rgitui_settings::{
     config_dir, AiProvider, AppearanceMode, AutoFetchInterval, Compactness, DiffViewMode,
     GitProviderSettings, GraphStyle, SettingsState,
@@ -36,21 +36,23 @@ use super::{SettingsWindowAction, SettingsWindowActionGlobal};
 use crate::github_device_flow::{self, DeviceFlowStatus};
 use crate::CommandId;
 
-/// The commands the General section shows a keystroke for.
+/// The commands the General section shows a keystroke for, each with the
+/// message key of its description.
 ///
-/// Only the command *ids* are listed — the label is the command's doc comment and
-/// the keystroke comes from the keymap, so this cannot drift from what the keys
-/// actually do. It is a short list on purpose; the full reference lives in the
-/// workspace's shortcut panel.
-const QUICK_REFERENCE_COMMANDS: &[CommandId] = &[
-    CommandId::CommandPalette,
-    CommandId::Search,
-    CommandId::StageAll,
-    CommandId::UnstageAll,
-    CommandId::Commit,
-    CommandId::OpenRepo,
-    CommandId::Refresh,
-    CommandId::Settings,
+/// The keystroke comes from the keymap, so it cannot drift from what the keys
+/// actually do. The description's English is the command's doc comment, which
+/// `quick_reference_descriptions_match_the_command_doc_comments` keeps in step.
+/// It is a short list on purpose; the full reference lives in the workspace's
+/// shortcut panel.
+const QUICK_REFERENCE_COMMANDS: &[(CommandId, &str)] = &[
+    (CommandId::CommandPalette, key!("shortcuts.command_palette")),
+    (CommandId::Search, key!("shortcuts.search")),
+    (CommandId::StageAll, key!("shortcuts.stage_all")),
+    (CommandId::UnstageAll, key!("shortcuts.unstage_all")),
+    (CommandId::Commit, key!("shortcuts.commit")),
+    (CommandId::OpenRepo, key!("shortcuts.open_repo")),
+    (CommandId::Refresh, key!("shortcuts.refresh")),
+    (CommandId::Settings, key!("shortcuts.settings")),
 ];
 
 /// Where the AI page's tab order starts.
@@ -103,13 +105,13 @@ pub(super) fn masked_tail(secret: &str) -> String {
 }
 
 /// A coarse "2 min ago" for a verification timestamp.
-pub(super) fn relative_age(elapsed: std::time::Duration) -> String {
+pub(super) fn relative_age(elapsed: std::time::Duration) -> SharedString {
     let seconds = elapsed.as_secs();
     match seconds {
-        0..=44 => "just now".to_string(),
-        45..=5399 => format!("{} min ago", (seconds + 30) / 60),
-        5400..=86_399 => format!("{} h ago", (seconds + 1800) / 3600),
-        _ => format!("{} d ago", (seconds + 43_200) / 86_400),
+        0..=44 => t!("settings.age.just_now"),
+        45..=5399 => t!("settings.age.minutes", count = (seconds + 30) / 60),
+        5400..=86_399 => t!("settings.age.hours", count = (seconds + 1800) / 3600),
+        _ => t!("settings.age.days", count = (seconds + 43_200) / 86_400),
     }
 }
 
@@ -118,29 +120,33 @@ pub(super) fn relative_age(elapsed: std::time::Duration) -> String {
 ///
 /// Clamps rather than wrapping: a radio group that jumps from the last option
 /// back to the first makes it easy to overshoot a setting without noticing.
-pub(super) fn adjacent_option(options: &[String], selected: &str, delta: isize) -> Option<String> {
-    let current = options.iter().position(|option| option == selected)?;
+pub(super) fn adjacent_option<T: Copy + PartialEq>(
+    options: &[T],
+    selected: T,
+    delta: isize,
+) -> Option<T> {
+    let current = options.iter().position(|option| *option == selected)?;
     let next = current as isize + delta;
     if next < 0 || next >= options.len() as isize {
         return None;
     }
-    options.get(next as usize).cloned()
+    options.get(next as usize).copied()
 }
 
 /// The name of the OS credential store, for the reassurance line under the key
 /// field.
-pub(super) fn credential_store_name() -> &'static str {
+pub(super) fn credential_store_name() -> SharedString {
     #[cfg(target_os = "windows")]
     {
-        "Windows Credential Manager"
+        t!("settings.ai.credential_store.windows")
     }
     #[cfg(target_os = "macos")]
     {
-        "the macOS Keychain"
+        t!("settings.ai.credential_store.macos")
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        "your system keyring"
+        t!("settings.ai.credential_store.system_keyring")
     }
 }
 
@@ -561,7 +567,10 @@ impl SettingsView {
                 .global::<SettingsState>()
                 .ai_api_key_for(*provider)
                 .unwrap_or_default();
-            let placeholder = format!("Paste your {} API key", provider.display_name());
+            let placeholder = t!(
+                "settings.ai.key.placeholder",
+                provider = provider.display_name()
+            );
             let editor = cx.new(|cx| {
                 let mut input = TextInput::new(cx);
                 input.set_placeholder(placeholder);
@@ -680,7 +689,7 @@ impl SettingsView {
 
         let git_https_token_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Paste a generic HTTPS token only if you need a fallback...");
+            ti.set_placeholder_message(key!("settings.auth.https_token.placeholder"));
             ti.set_masked(true);
             if !git_https_token_val.is_empty() {
                 ti.set_text(&git_https_token_val, cx);
@@ -699,7 +708,7 @@ impl SettingsView {
 
         let git_gpg_key_id_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("No explicit GPG key configured");
+            ti.set_placeholder_message(key!("settings.auth.gpg_key.placeholder"));
             if !git_gpg_key_id_val.is_empty() {
                 ti.set_text(&git_gpg_key_id_val, cx);
             }
@@ -728,7 +737,7 @@ impl SettingsView {
 
         let provider_username_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Usually left empty");
+            ti.set_placeholder_message(key!("settings.auth.usually_empty"));
             if let Some(p) = first_provider {
                 ti.set_text(&p.username, cx);
             }
@@ -737,7 +746,7 @@ impl SettingsView {
 
         let provider_token_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Paste the access token for this account...");
+            ti.set_placeholder_message(key!("settings.auth.account_token.placeholder"));
             ti.set_masked(true);
             if let Some(p) = first_provider {
                 ti.set_text(&p.token, cx);
@@ -747,7 +756,7 @@ impl SettingsView {
 
         let terminal_command_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Custom command override...");
+            ti.set_placeholder_message(key!("settings.custom_command.placeholder"));
             if !settings.terminal_command.is_empty() {
                 ti.set_text(&settings.terminal_command, cx);
             }
@@ -756,7 +765,7 @@ impl SettingsView {
 
         let editor_command_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Custom command override...");
+            ti.set_placeholder_message(key!("settings.custom_command.placeholder"));
             if !settings.editor_command.is_empty() {
                 ti.set_text(&settings.editor_command, cx);
             }
@@ -952,6 +961,11 @@ impl SettingsView {
                 }
             },
         )
+        .detach();
+
+        cx.observe_global::<rgitui_i18n::ActiveLanguage>(|this, cx| {
+            this.translate_placeholders(cx)
+        })
         .detach();
 
         Self {
@@ -2010,17 +2024,18 @@ impl SettingsView {
     /// The container is a single tab stop and Left/Right move within it, which
     /// is the radio-group convention — putting every pill in the tab order
     /// would make a four-option row cost four tabs to skip.
-    pub(super) fn pill_group(
+    /// A row of mutually exclusive pills. Each option pairs the value it
+    /// selects with the label it shows, so the label can be translated without
+    /// the selection depending on its text.
+    pub(super) fn pill_group<T: Copy + PartialEq + 'static>(
         &self,
         group_id: &str,
-        options: &[&str],
-        selected: &str,
-        on_select: impl Fn(&mut Self, String, &mut Context<Self>) + 'static,
+        options: &[(T, SharedString)],
+        selected: T,
+        on_select: impl Fn(&mut Self, T, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let on_select = std::rc::Rc::new(on_select);
-        let options_vec: Vec<String> = options.iter().map(|o| o.to_string()).collect();
-        let selected_str = selected.to_string();
         let colors = cx.colors().clone();
 
         // `flex_wrap()`, and `div().flex().flex_row()` rather than `h_flex()`.
@@ -2031,8 +2046,7 @@ impl SettingsView {
         // window could not render the default provider's own model list.
         // `h_flex()` is `flex_row().items_center()`, and once a row wraps that
         // forced centring breaks the moment any pill grows a second line.
-        let keyboard_options = options_vec.clone();
-        let keyboard_selected = selected_str.clone();
+        let keyboard_options: Vec<T> = options.iter().map(|(value, _)| *value).collect();
         let keyboard_select = on_select.clone();
 
         let mut row = div()
@@ -2060,17 +2074,15 @@ impl SettingsView {
                     "right" | "down" => 1,
                     _ => return,
                 };
-                let Some(next) = adjacent_option(&keyboard_options, &keyboard_selected, delta)
-                else {
+                let Some(next) = adjacent_option(&keyboard_options, selected, delta) else {
                     return;
                 };
                 cx.stop_propagation();
                 keyboard_select(this, next, cx);
             }));
 
-        for (idx, option) in options_vec.into_iter().enumerate() {
-            let is_selected = option == selected_str;
-            let label: SharedString = option.clone().into();
+        for (idx, (value, label)) in options.iter().cloned().enumerate() {
+            let is_selected = value == selected;
             let on_select = on_select.clone();
 
             row = row.child(
@@ -2095,7 +2107,7 @@ impl SettingsView {
                         el.hover(|s| s.bg(colors.ghost_element_hover))
                     })
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        on_select(this, option.clone(), cx);
+                        on_select(this, value, cx);
                     }))
                     .child(
                         Label::new(label)
@@ -2638,15 +2650,15 @@ impl SettingsView {
         let mut section = div().v_flex().w_full().min_w_0().gap(px(16.));
         section = section.child(Self::section_header(
             IconName::GitBranch,
-            "Accounts & Credentials",
-            "Use browser sign-in for GitHub or GitLab, manage all account profiles in one place, and keep SSH separate from HTTPS tokens.",
+            t!("settings.accounts.header"),
+            t!("settings.accounts.header_description"),
         ));
 
         let mut quick_setup = Self::setting_card(cx);
         quick_setup = quick_setup
             .child(Self::setting_label(
-                "Quick Setup",
-                "Start by adding the provider account you want to use. Browser sign-in is the primary path. Manual setup is available for self-hosted or custom HTTPS remotes.",
+                t!("settings.quick_setup.title"),
+                t!("settings.quick_setup.description"),
             ))
             .child(
                 div()
@@ -2654,7 +2666,7 @@ impl SettingsView {
                     .flex_wrap()
                     .gap(px(8.))
                     .child(
-                        Button::new("add-github-account", "Sign in with GitHub")
+                        Button::new("add-github-account", t!("settings.sign_in_github"))
                             .style(ButtonStyle::Filled)
                             .size(ButtonSize::Compact)
                             .icon(IconName::Plus)
@@ -2663,7 +2675,7 @@ impl SettingsView {
                             })),
                     )
                     .child(
-                        Button::new("add-gitlab-account", "Add GitLab Account")
+                        Button::new("add-gitlab-account", t!("settings.add_gitlab"))
                             .style(ButtonStyle::Outlined)
                             .size(ButtonSize::Compact)
                             .icon(IconName::Plus)
@@ -2672,7 +2684,7 @@ impl SettingsView {
                             })),
                     )
                     .child(
-                        Button::new("add-custom-account", "Manual / Custom Host")
+                        Button::new("add-custom-account", t!("settings.manual_custom"))
                             .style(ButtonStyle::Outlined)
                             .size(ButtonSize::Compact)
                             .icon(IconName::ExternalLink)
@@ -2839,8 +2851,8 @@ impl SettingsView {
 
         let mut profiles_card = Self::setting_card(cx);
         profiles_card = profiles_card.child(Self::setting_label(
-            "Profiles",
-            "All saved accounts live here. Select one to connect it, paste a token, or adjust host matching.",
+            t!("settings.auth.profiles.title"),
+            t!("settings.auth.profiles.description"),
         ));
 
         if self.git_providers.is_empty() {
@@ -2855,16 +2867,14 @@ impl SettingsView {
                     .border_1()
                     .border_color(colors.border_variant)
                     .child(
-                        Label::new("No provider accounts configured yet.")
+                        Label::new(t!("settings.auth.profiles_empty.title"))
                             .size(LabelSize::Small)
                             .weight(FontWeight::SEMIBOLD),
                     )
                     .child(
-                        Label::new(
-                            "Add a GitHub account to start with the default flow, or choose Manual / Custom Host for enterprise and other HTTPS remotes.",
-                        )
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
+                        Label::new(t!("settings.auth.profiles_empty.description"))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
                     ),
             );
         } else {
@@ -3250,8 +3260,8 @@ impl SettingsView {
         let mut https_card = Self::setting_card(cx);
         https_card = https_card
             .child(Self::setting_label(
-                "Fallback HTTPS Token / PAT",
-                "Used only when no profile-specific account matches the remote host. Leave this empty unless you truly need a generic fallback.",
+                t!("settings.auth.https_fallback.title"),
+                t!("settings.auth.https_fallback.description"),
             ))
             .child(self.masked_editor_row(
                 "git-https-token-input",
@@ -3269,8 +3279,8 @@ impl SettingsView {
         let mut ssh_card = Self::setting_card(cx);
         ssh_card = ssh_card
             .child(Self::setting_label(
-                "SSH Key Override",
-                "Optional. If set, this key is tried first for SSH remotes. If SSH fails and you have a GitHub account above, rgitui automatically falls back to HTTPS.",
+                t!("settings.auth.ssh_override.title"),
+                t!("settings.auth.ssh_override.description"),
             ))
             .child(
                 div()
@@ -3278,13 +3288,9 @@ impl SettingsView {
                     .w_full()
                     .gap(px(6.))
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(self.icon_editor_row(
-                                &self.git_ssh_key_path_editor,
-                                IconName::File,
-                            )),
+                        div().flex_1().min_w_0().child(
+                            self.icon_editor_row(&self.git_ssh_key_path_editor, IconName::File),
+                        ),
                     )
                     .when(has_ssh_key, |el| {
                         el.child(
@@ -3316,17 +3322,12 @@ impl SettingsView {
                         .border_1()
                         .border_color(colors.border_variant)
                         .child(
-                            div()
-                                .v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap(px(2.))
-                                .child(
-                                    Label::new(format!("Detected: {}", key_path.clone()))
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Muted)
-                                        .truncate(),
-                                ),
+                            div().v_flex().flex_1().min_w_0().gap(px(2.)).child(
+                                Label::new(format!("Detected: {}", key_path.clone()))
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted)
+                                    .truncate(),
+                            ),
                         )
                         .when(!already_selected, |el| {
                             el.child(
@@ -3359,12 +3360,12 @@ impl SettingsView {
                             .flex_1()
                             .gap(px(2.))
                             .child(
-                                Label::new("Sign Commits")
+                                Label::new(t!("settings.auth.sign_commits.title"))
                                     .size(LabelSize::Small)
                                     .weight(FontWeight::SEMIBOLD),
                             )
                             .child(
-                                Label::new("Sign commits with your configured GPG key.")
+                                Label::new(t!("settings.auth.sign_commits.description"))
                                     .size(LabelSize::XSmall)
                                     .color(Color::Muted),
                             ),
@@ -3388,8 +3389,8 @@ impl SettingsView {
                     ),
             )
             .child(Self::setting_label(
-                "GPG Key ID",
-                "Leave empty to use your existing git config default signing key.",
+                t!("settings.auth.gpg_key.title"),
+                t!("settings.auth.gpg_key.description"),
             ))
             .child(self.icon_editor_row(&self.git_gpg_key_id_editor, IconName::Eye));
         section = section.child(gpg_card);
@@ -3400,29 +3401,23 @@ impl SettingsView {
                     .v_flex()
                     .gap(px(6.))
                     .child(Self::setting_label(
-                        "How Authentication Works",
-                        "rgitui detects the remote URL protocol and authenticates accordingly.",
+                        t!("settings.auth.how.title"),
+                        t!("settings.auth.how.description"),
                     ))
                     .child(
-                        Label::new(
-                            "HTTPS remotes: uses your GitHub account token (above), or falls back to your system git credential helper (e.g. gh auth).",
-                        )
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
+                        Label::new(t!("settings.auth.how.https"))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
                     )
                     .child(
-                        Label::new(
-                            "SSH remotes: if no SSH key is configured above, and your system has an HTTPS credential helper, rgitui automatically rewrites SSH to HTTPS so your GitHub login works.",
-                        )
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
+                        Label::new(t!("settings.auth.how.ssh_fallback"))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
                     )
                     .child(
-                        Label::new(
-                            "SSH remotes with a key: uses the SSH key path above (or ssh-agent) directly.",
-                        )
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
+                        Label::new(t!("settings.auth.how.ssh_key"))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
                     ),
             ),
         );
@@ -3439,8 +3434,8 @@ impl SettingsView {
 
         section = section.child(Self::section_header(
             IconName::Settings,
-            "General",
-            "Application preferences and behavior.",
+            t!("settings.nav.general"),
+            t!("settings.general.description"),
         ));
 
         // Recent repos card
@@ -3456,12 +3451,12 @@ impl SettingsView {
                         .flex_1()
                         .gap(px(2.))
                         .child(
-                            Label::new("Max Recent Repositories")
+                            Label::new(t!("settings.max_recent.title"))
                                 .size(LabelSize::Small)
                                 .weight(FontWeight::SEMIBOLD),
                         )
                         .child(
-                            Label::new("Number of repos shown in the recent list.")
+                            Label::new(t!("settings.max_recent.description"))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted),
                         ),
@@ -3524,14 +3519,26 @@ impl SettingsView {
                 .v_flex()
                 .gap(px(8.))
                 .child(Self::setting_label(
-                    "UI Density",
-                    "Adjust the spacing and sizing of UI elements.",
+                    t!("settings.ui_density.title"),
+                    t!("settings.ui_density.description"),
                 ))
                 .child({
-                    let options: [(&str, &str, Compactness); 3] = [
-                        ("compact", "Compact", Compactness::Compact),
-                        ("default", "Default", Compactness::Default),
-                        ("comfortable", "Comfortable", Compactness::Comfortable),
+                    let options: [(&str, &'static str, Compactness); 3] = [
+                        (
+                            "compact",
+                            key!("settings.ui_density.compact"),
+                            Compactness::Compact,
+                        ),
+                        (
+                            "default",
+                            key!("settings.ui_density.default"),
+                            Compactness::Default,
+                        ),
+                        (
+                            "comfortable",
+                            key!("settings.ui_density.comfortable"),
+                            Compactness::Comfortable,
+                        ),
                     ];
                     let mut row = div()
                         .h_flex()
@@ -3539,7 +3546,8 @@ impl SettingsView {
                         .p(px(3.))
                         .rounded(px(8.))
                         .bg(colors.element_background);
-                    for (id, label, variant) in options {
+                    for (id, key, variant) in options {
+                        let label = rgitui_i18n::translate(key);
                         let is_selected = current_compactness == variant;
                         let hover_bg = colors.ghost_element_hover;
                         let mut btn = div()
@@ -3593,12 +3601,12 @@ impl SettingsView {
                         .flex_1()
                         .gap(px(2.))
                         .child(
-                            Label::new("Font Size")
+                            Label::new(t!("settings.font_size.title"))
                                 .size(LabelSize::Small)
                                 .weight(FontWeight::SEMIBOLD),
                         )
                         .child(
-                            Label::new("Base font size for the user interface (8 - 24).")
+                            Label::new(t!("settings.font_size.description"))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted),
                         ),
@@ -3670,12 +3678,12 @@ impl SettingsView {
                             .flex_1()
                             .gap(px(2.))
                             .child(
-                                Label::new("Show Line Numbers in Diff")
+                                Label::new(t!("settings.show_line_numbers.title"))
                                     .size(LabelSize::Small)
                                     .weight(FontWeight::SEMIBOLD),
                             )
                             .child(
-                                Label::new("Display line numbers alongside diff content.")
+                                Label::new(t!("settings.show_line_numbers.description"))
                                     .size(LabelSize::XSmall)
                                     .color(Color::Muted),
                             ),
@@ -3709,16 +3717,14 @@ impl SettingsView {
                             .flex_1()
                             .gap(px(2.))
                             .child(
-                                Label::new("Wrap Long Lines in Diff")
+                                Label::new(t!("settings.wrap_lines.title"))
                                     .size(LabelSize::Small)
                                     .weight(FontWeight::SEMIBOLD),
                             )
                             .child(
-                                Label::new(
-                                    "Wrap overflowing lines instead of scrolling horizontally.",
-                                )
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted),
+                                Label::new(t!("settings.wrap_lines.description"))
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
                             ),
                     )
                     .child(
@@ -3744,19 +3750,21 @@ impl SettingsView {
                     .v_flex()
                     .gap(px(8.))
                     .child(Self::setting_label(
-                        "Default Diff View Mode",
-                        "Choose how diffs are displayed.",
+                        t!("settings.diff_mode.title"),
+                        t!("settings.diff_mode.description"),
                     ))
                     .child(self.pill_group(
                         "diff-view-mode",
-                        &["Unified", "Side-by-Side"],
-                        &self.diff_view_mode.to_string(),
+                        &[
+                            (DiffViewMode::Unified, t!("settings.diff_mode.unified")),
+                            (
+                                DiffViewMode::SideBySide,
+                                t!("settings.diff_mode.side_by_side"),
+                            ),
+                        ],
+                        self.diff_view_mode,
                         |this, value, cx| {
-                            this.diff_view_mode = match value.as_str() {
-                                "Unified" => DiffViewMode::Unified,
-                                "Side-by-Side" => DiffViewMode::SideBySide,
-                                _ => DiffViewMode::Unified,
-                            };
+                            this.diff_view_mode = value;
                             this.save_settings(cx);
                         },
                         cx,
@@ -3771,20 +3779,19 @@ impl SettingsView {
                 .v_flex()
                 .gap(px(8.))
                 .child(Self::setting_label(
-                    "Graph Style",
-                    "Visual style for the commit graph rendering.",
+                    t!("settings.graph.title"),
+                    t!("settings.graph.description"),
                 ))
                 .child(self.pill_group(
                     "graph-style",
-                    &["Rails", "Curved", "Angular"],
-                    &self.graph_style.to_string(),
+                    &[
+                        (GraphStyle::Rails, t!("settings.graph.rails")),
+                        (GraphStyle::Curved, t!("settings.graph.curved")),
+                        (GraphStyle::Angular, t!("settings.graph.angular")),
+                    ],
+                    self.graph_style,
                     |this, value, cx| {
-                        this.graph_style = match value.as_str() {
-                            "Rails" => GraphStyle::Rails,
-                            "Curved" => GraphStyle::Curved,
-                            "Angular" => GraphStyle::Angular,
-                            _ => GraphStyle::Rails,
-                        };
+                        this.graph_style = value;
                         this.save_settings(cx);
                     },
                     cx,
@@ -3802,12 +3809,12 @@ impl SettingsView {
                                 .flex_1()
                                 .gap(px(2.))
                                 .child(
-                                    Label::new("Show Subject Column")
+                                    Label::new(t!("settings.show_subject.title"))
                                         .size(LabelSize::Small)
                                         .weight(FontWeight::SEMIBOLD),
                                 )
                                 .child(
-                                    Label::new("Display commit subject in the graph.")
+                                    Label::new(t!("settings.show_subject.description"))
                                         .size(LabelSize::XSmall)
                                         .color(Color::Muted),
                                 ),
@@ -3840,8 +3847,8 @@ impl SettingsView {
                 .v_flex()
                 .gap(px(8.))
                 .child(Self::setting_label(
-                    "Auto-Fetch Interval",
-                    "How often to automatically fetch from remotes in the background.",
+                    t!("settings.auto_fetch.title"),
+                    t!("settings.auto_fetch.description"),
                 ))
                 // A `Select`, not a pill row: five fixed-width pills is the
                 // widest closed choice on the page, and unlike commit style
@@ -3864,16 +3871,14 @@ impl SettingsView {
                         .flex_1()
                         .gap(px(2.))
                         .child(
-                            Label::new("Confirm Before Destructive Operations")
+                            Label::new(t!("settings.confirm_destructive.title"))
                                 .size(LabelSize::Small)
                                 .weight(FontWeight::SEMIBOLD),
                         )
                         .child(
-                            Label::new(
-                                "Show a confirmation dialog before force push, branch delete, discard changes, and similar actions.",
-                            )
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
+                            Label::new(t!("settings.confirm_destructive.description"))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
                         ),
                 )
                 .child(
@@ -3911,16 +3916,14 @@ impl SettingsView {
                         .flex_1()
                         .gap(px(2.))
                         .child(
-                            Label::new("Check for Updates on Startup")
+                            Label::new(t!("settings.check_updates.title"))
                                 .size(LabelSize::Small)
                                 .weight(FontWeight::SEMIBOLD),
                         )
                         .child(
-                            Label::new(
-                                "Contact api.github.com once per day to see if a newer release is available. Turn off to keep rgitui offline.",
-                            )
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
+                            Label::new(t!("settings.check_updates.description"))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
                         ),
                 )
                 .child(
@@ -3957,16 +3960,14 @@ impl SettingsView {
                         .flex_1()
                         .gap(px(2.))
                         .child(
-                            Label::new("Watch All Worktrees")
+                            Label::new(t!("settings.watch_worktrees.title"))
                                 .size(LabelSize::Small)
                                 .weight(FontWeight::SEMIBOLD),
                         )
                         .child(
-                            Label::new(
-                                "Refresh the graph whenever files change in any linked worktree, not just the current one. Useful when you have multiple worktrees open and work is happening in them in parallel.",
-                            )
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
+                            Label::new(t!("settings.watch_worktrees.description"))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
                         ),
                 )
                 .child(
@@ -4006,7 +4007,7 @@ impl SettingsView {
                 .any(|app| app.command == editor_custom_text);
 
         let mut terminal_section = div().v_flex().gap(px(6.)).child(
-            Label::new("Terminal")
+            Label::new(t!("settings.terminal"))
                 .size(LabelSize::XSmall)
                 .weight(FontWeight::SEMIBOLD),
         );
@@ -4095,7 +4096,7 @@ impl SettingsView {
                 .v_flex()
                 .gap(px(2.))
                 .child(
-                    Label::new("Custom command (overrides selection)")
+                    Label::new(t!("settings.custom_command"))
                         .size(LabelSize::XSmall)
                         .color(Color::Muted),
                 )
@@ -4103,7 +4104,7 @@ impl SettingsView {
         );
 
         let mut editor_section = div().v_flex().gap(px(6.)).child(
-            Label::new("Editor")
+            Label::new(t!("settings.editor"))
                 .size(LabelSize::XSmall)
                 .weight(FontWeight::SEMIBOLD),
         );
@@ -4189,7 +4190,7 @@ impl SettingsView {
                 .v_flex()
                 .gap(px(2.))
                 .child(
-                    Label::new("Custom command (overrides selection)")
+                    Label::new(t!("settings.custom_command"))
                         .size(LabelSize::XSmall)
                         .color(Color::Muted),
                 )
@@ -4201,8 +4202,8 @@ impl SettingsView {
                 .v_flex()
                 .gap(px(16.))
                 .child(Self::setting_label(
-                    "External Tools",
-                    "Select a detected application or enter a custom command.",
+                    t!("settings.external_tools.title"),
+                    t!("settings.external_tools.description"),
                 ))
                 .child(terminal_section)
                 .child(editor_section),
@@ -4214,12 +4215,11 @@ impl SettingsView {
         // it follows the user's keymap.json instead of quoting a default.
         let mut shortcuts_card = Self::setting_card(cx);
         let mut shortcuts_list = div().v_flex().gap(px(8.)).child(Self::setting_label(
-            "Keyboard Shortcuts",
-            "The bindings in force for a few common actions. Open the full \
-             reference from the workspace for all of them.",
+            t!("common.keyboard_shortcuts"),
+            t!("settings.shortcuts.description"),
         ));
-        for id in QUICK_REFERENCE_COMMANDS {
-            shortcuts_list = shortcuts_list.child(self.render_shortcut_row(*id, cx));
+        for (id, description) in QUICK_REFERENCE_COMMANDS {
+            shortcuts_list = shortcuts_list.child(Self::render_shortcut_row(*id, description, cx));
         }
         shortcuts_list = shortcuts_list.child(Self::keymap_file_row(cx));
         shortcuts_card = shortcuts_card.child(shortcuts_list);
@@ -4235,8 +4235,8 @@ impl SettingsView {
                 .v_flex()
                 .gap(px(8.))
                 .child(Self::setting_label(
-                    "Config File",
-                    "Location of the settings file on disk.",
+                    t!("settings.config.title"),
+                    t!("settings.config.description"),
                 ))
                 .child(
                     div()
@@ -4252,7 +4252,7 @@ impl SettingsView {
                             ),
                         )
                         .child(
-                            Button::new("reveal-config-dir", "Reveal")
+                            Button::new("reveal-config-dir", t!("settings.reveal"))
                                 .style(ButtonStyle::Subtle)
                                 .size(ButtonSize::Compact)
                                 .icon(IconName::Folder)
@@ -4288,8 +4288,13 @@ impl SettingsView {
     /// keymap currently binds it to.
     ///
     /// A binding the user defined is tinted and labelled, matching the badge in
-    /// the full shortcut reference.
-    fn render_shortcut_row(&self, id: CommandId, cx: &Context<Self>) -> impl IntoElement {
+    /// the full shortcut reference. The description is translated; the keystroke
+    /// comes from the keymap in force and is never translated.
+    fn render_shortcut_row(
+        id: CommandId,
+        description: &'static str,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
         let colors = cx.colors();
         let summary = crate::keymap::summary(cx);
         let is_user_defined = summary.is_user_defined(id);
@@ -4309,7 +4314,7 @@ impl SettingsView {
             .gap(px(6.))
             .py(px(4.))
             .child(
-                Label::new(SharedString::from(id.description()))
+                Label::new(rgitui_i18n::translate(description))
                     .size(LabelSize::XSmall)
                     .color(Color::Muted),
             )
@@ -4362,7 +4367,7 @@ impl SettingsView {
                 ),
             )
             .child(
-                Button::new("open-keymap-file", "Edit keymap.json")
+                Button::new("open-keymap-file", t!("common.edit_keymap"))
                     .style(ButtonStyle::Subtle)
                     .size(ButtonSize::Compact)
                     .icon(IconName::Settings)
@@ -4382,6 +4387,18 @@ impl SettingsView {
 }
 
 impl SettingsView {
+    /// Re-translate the API key placeholders, which name their provider and so
+    /// are built once in `new` rather than given a message key.
+    fn translate_placeholders(&mut self, cx: &mut Context<Self>) {
+        for (provider, editor) in &self.ai_key_editors {
+            let placeholder = t!(
+                "settings.ai.key.placeholder",
+                provider = provider.display_name()
+            );
+            editor.update(cx, |ed, _| ed.set_placeholder(placeholder));
+        }
+    }
+
     /// Build the inner sidebar+content layout for the standalone
     /// `SettingsWindow` host. The host provides its own close affordance.
     pub fn render_window_body(
@@ -4411,20 +4428,17 @@ impl SettingsView {
         // carried no information at all.
         let (page_title, page_subtitle) = match self.active_section {
             SettingsSection::Theme => (
-                "Appearance",
-                "Theme, layout, and visual defaults for the application.",
+                t!("settings.nav.appearance"),
+                t!("settings.theme_page.description"),
             ),
-            SettingsSection::Ai => (
-                "AI",
-                "Providers, models, and how commit messages get written.",
-            ),
+            SettingsSection::Ai => (t!("settings.nav.ai"), t!("settings.ai_page.description")),
             SettingsSection::Auth => (
-                "Accounts",
-                "Account profiles, HTTPS tokens, and SSH configuration.",
+                t!("settings.accounts.title"),
+                t!("settings.accounts.description"),
             ),
             SettingsSection::General => (
-                "General",
-                "General application behavior and workspace defaults.",
+                t!("settings.nav.general"),
+                t!("settings.general_page.description"),
             ),
         };
 
@@ -4475,7 +4489,7 @@ impl SettingsView {
                             Label::new(if is_error {
                                 message
                             } else {
-                                "Saved".to_string()
+                                t!("settings.saved_feedback").to_string()
                             })
                             .size(LabelSize::XSmall)
                             .color(if is_error { Color::Error } else { Color::Muted })
@@ -4537,6 +4551,17 @@ impl SettingsView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quick_reference_descriptions_match_the_command_doc_comments() {
+        for (id, description) in QUICK_REFERENCE_COMMANDS {
+            assert_eq!(
+                rgitui_i18n::translate(description).as_ref(),
+                id.description(),
+                "{id:?}"
+            );
+        }
+    }
 
     // ── pasted secrets ────────────────────────────────────────────
 
@@ -4627,34 +4652,28 @@ mod tests {
 
     #[test]
     fn arrow_keys_step_through_a_pill_group() {
-        let options: Vec<String> = ["conventional", "descriptive", "brief"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let options = ["conventional", "descriptive", "brief"];
         assert_eq!(
-            adjacent_option(&options, "conventional", 1).as_deref(),
+            adjacent_option(&options, "conventional", 1),
             Some("descriptive")
         );
-        assert_eq!(
-            adjacent_option(&options, "brief", -1).as_deref(),
-            Some("descriptive")
-        );
+        assert_eq!(adjacent_option(&options, "brief", -1), Some("descriptive"));
     }
 
     /// Clamping rather than wrapping: jumping from the last option back to the
     /// first makes it easy to overshoot a setting without noticing.
     #[test]
     fn arrow_keys_clamp_at_both_ends() {
-        let options: Vec<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+        let options = ["a", "b"];
         assert_eq!(adjacent_option(&options, "b", 1), None);
         assert_eq!(adjacent_option(&options, "a", -1), None);
     }
 
     #[test]
     fn a_selection_that_is_not_in_the_group_has_no_neighbour() {
-        let options: Vec<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+        let options = ["a", "b"];
         assert_eq!(adjacent_option(&options, "z", 1), None);
-        assert_eq!(adjacent_option(&[], "a", 1), None);
+        assert_eq!(adjacent_option::<&str>(&[], "a", 1), None);
     }
 
     #[test]

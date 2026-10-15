@@ -7,6 +7,7 @@ use gpui::prelude::*;
 use gpui::{
     div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Render, SharedString, Window,
 };
+use rgitui_i18n::{key, t};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput,
@@ -46,7 +47,7 @@ impl StashBranchDialog {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Enter branch name...");
+            ti.set_placeholder_message(key!("branch_dialog.name.placeholder"));
             ti
         });
         cx.subscribe(
@@ -192,6 +193,7 @@ impl Render for StashBranchDialog {
         }
 
         let colors = cx.colors().clone();
+
         let branch_name = self.editor.read(cx).text().to_string();
         let has_error = self.error_message.is_some();
         let can_create = !branch_name.is_empty() && !has_error;
@@ -250,7 +252,7 @@ impl Render for StashBranchDialog {
                         ),
                 )
                 .child(
-                    Label::new("Create Branch from Stash")
+                    Label::new(t!("branch_dialog.from_stash.title"))
                         .size(LabelSize::Large)
                         .weight(gpui::FontWeight::BOLD),
                 ),
@@ -263,7 +265,7 @@ impl Render for StashBranchDialog {
                 .gap(px(6.))
                 .items_center()
                 .child(
-                    Label::new("From")
+                    Label::new(t!("branch_dialog.from_stash.from"))
                         .size(LabelSize::XSmall)
                         .color(Color::Muted),
                 )
@@ -296,7 +298,7 @@ impl Render for StashBranchDialog {
                 .v_flex()
                 .gap(px(6.))
                 .child(
-                    Label::new("Branch name")
+                    Label::new(t!("branch_dialog.name"))
                         .size(LabelSize::Small)
                         .weight(gpui::FontWeight::MEDIUM)
                         .color(Color::Muted),
@@ -345,7 +347,7 @@ impl Render for StashBranchDialog {
                 .w_full()
                 .gap_2()
                 .child(
-                    Label::new("Enter to create | Esc to cancel")
+                    Label::new(t!("common.create_hint"))
                         .size(LabelSize::XSmall)
                         .color(Color::Placeholder),
                 )
@@ -357,7 +359,7 @@ impl Render for StashBranchDialog {
                         .justify_end()
                         .w_full()
                         .child(
-                            Button::new("cancel-stash-branch", "Cancel")
+                            Button::new("cancel-stash-branch", t!("common.cancel"))
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Subtle)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -365,7 +367,7 @@ impl Render for StashBranchDialog {
                                 })),
                         )
                         .child(
-                            Button::new("create-stash-branch", "Create Branch")
+                            Button::new("create-stash-branch", t!("branch_dialog.title"))
                                 .icon(IconName::GitBranch)
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Filled)

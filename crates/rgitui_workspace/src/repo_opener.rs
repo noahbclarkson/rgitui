@@ -5,6 +5,7 @@ use gpui::{
     div, px, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle, FontWeight, Render,
     SharedString, Window,
 };
+use rgitui_i18n::{key, t};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput, TextInputEvent,
@@ -35,7 +36,7 @@ impl RepoOpener {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Enter repository path...");
+            ti.set_placeholder_message(key!("repo_opener.enter_repo_path.placeholder"));
             ti
         });
         cx.subscribe(
@@ -276,7 +277,7 @@ impl Render for RepoOpener {
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Open Repository")
+                            Label::new(t!("common.open_repository"))
                                 .size(LabelSize::Large)
                                 .weight(FontWeight::SEMIBOLD),
                         ),
@@ -310,7 +311,7 @@ impl Render for RepoOpener {
                 .v_flex()
                 .gap(px(8.))
                 .child(
-                    Label::new("Repository path")
+                    Label::new(t!("repo_opener.repo_path"))
                         .size(LabelSize::Small)
                         .weight(FontWeight::MEDIUM)
                         .color(Color::Muted),
@@ -333,7 +334,7 @@ impl Render for RepoOpener {
                                 .child(div().flex_1().child(self.editor.clone())),
                         )
                         .child(
-                            Button::new("browse-folder", "Browse")
+                            Button::new("browse-folder", t!("common.browse"))
                                 .style(ButtonStyle::Subtle)
                                 .icon(IconName::Folder)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -341,7 +342,7 @@ impl Render for RepoOpener {
                                 })),
                         )
                         .child(
-                            Button::new("clone-repo", "Clone")
+                            Button::new("clone-repo", t!("common.clone"))
                                 .style(ButtonStyle::Subtle)
                                 .icon(IconName::Plus)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -366,7 +367,7 @@ impl Render for RepoOpener {
                     .border_color(colors.border_variant)
                     .items_center()
                     .child(
-                        Label::new("Recent Repositories")
+                        Label::new(t!("common.recent_repositories"))
                             .size(LabelSize::XSmall)
                             .weight(FontWeight::SEMIBOLD)
                             .color(Color::Muted),
@@ -461,7 +462,7 @@ impl Render for RepoOpener {
                                 .color(Color::Placeholder),
                         )
                         .child(
-                            Label::new("No matching repositories")
+                            Label::new(t!("repo_opener.no_match_repos"))
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         ),
@@ -487,7 +488,7 @@ impl Render for RepoOpener {
                             .color(Color::Placeholder),
                     )
                     .child(
-                        Label::new("No recent repositories")
+                        Label::new(t!("repo_opener.no_recent_repos"))
                             .size(LabelSize::Small)
                             .color(Color::Muted),
                     ),
@@ -505,17 +506,19 @@ impl Render for RepoOpener {
                 .border_color(colors.border_variant)
                 .bg(colors.surface_background)
                 .child(
-                    Button::new("cancel-open", "Cancel")
+                    Button::new("cancel-open", t!("common.cancel"))
                         .style(ButtonStyle::Subtle)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.dismiss(cx);
                         })),
                 )
-                .child(Button::new("open-repo", "Open").on_click(cx.listener(
-                    |this, _: &ClickEvent, _, cx| {
-                        this.try_open(cx);
-                    },
-                ))),
+                .child(
+                    Button::new("open-repo", t!("repo_opener.open")).on_click(cx.listener(
+                        |this, _: &ClickEvent, _, cx| {
+                            this.try_open(cx);
+                        },
+                    )),
+                ),
         );
 
         div()

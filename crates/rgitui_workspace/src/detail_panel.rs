@@ -13,6 +13,7 @@ use rgitui_git::{
     compact_ref_labels, BranchInfo, CommitDiff, CommitInfo, FileChangeKind, FileDiff, RefLabel,
     Signature,
 };
+use rgitui_i18n::{key, t};
 use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
@@ -80,10 +81,10 @@ impl FileViewMode {
         }
     }
 
-    fn toggle_tooltip(self) -> &'static str {
+    fn toggle_tooltip(self) -> SharedString {
         match self {
-            Self::Flat => "Switch to Tree view (v)",
-            Self::Tree => "Switch to Flat view (v)",
+            Self::Flat => t!("detail.switch_to_tree.tooltip"),
+            Self::Tree => t!("detail.switch_to_flat.tooltip"),
         }
     }
 
@@ -107,11 +108,11 @@ fn file_view_toggle_tooltip(
     file_count: usize,
     is_searching: bool,
     file_view_mode: FileViewMode,
-) -> &'static str {
+) -> SharedString {
     if file_count == 0 {
-        "No changed files to display"
+        t!("detail.no_files.tooltip")
     } else if is_searching {
-        "Clear file search to switch views"
+        t!("detail.clear_search_to_switch.tooltip")
     } else {
         file_view_mode.toggle_tooltip()
     }
@@ -483,7 +484,7 @@ impl DetailPanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let file_search_editor = cx.new(|cx| {
             let mut input = TextInput::new(cx);
-            input.set_placeholder("Filter files...");
+            input.set_placeholder_message(key!("detail.filter_files.placeholder"));
             input.set_compact(true);
             input
         });
@@ -1296,7 +1297,7 @@ impl Render for DetailPanel {
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Details")
+                            Label::new(t!("common.details"))
                                 .size(LabelSize::Small)
                                 .weight(gpui::FontWeight::SEMIBOLD)
                                 .color(Color::Default),
@@ -1320,13 +1321,13 @@ impl Render for DetailPanel {
                                     .color(Color::Placeholder),
                             )
                             .child(
-                                Label::new("No commit selected")
+                                Label::new(t!("detail.empty.title"))
                                     .size(LabelSize::Small)
                                     .color(Color::Muted)
                                     .weight(gpui::FontWeight::SEMIBOLD),
                             )
                             .child(
-                                Label::new("Select a commit from the graph to view details")
+                                Label::new(t!("detail.empty.description"))
                                     .size(LabelSize::XSmall)
                                     .color(Color::Placeholder),
                             ),
@@ -1402,7 +1403,7 @@ impl Render for DetailPanel {
                         .color(Color::Muted),
                 )
                 .child(
-                    Label::new("Details")
+                    Label::new(t!("common.details"))
                         .size(LabelSize::Small)
                         .weight(gpui::FontWeight::SEMIBOLD)
                         .color(Color::Default),
@@ -1508,7 +1509,7 @@ impl Render for DetailPanel {
                 IconButton::new("copy-sha-btn", sha_icon)
                     .size(ButtonSize::Compact)
                     .style(ButtonStyle::Transparent)
-                    .tooltip("Copy commit SHA")
+                    .tooltip(t!("detail.copy_sha.tooltip"))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(
                             sha_copy_clone.to_string(),
@@ -1519,7 +1520,7 @@ impl Render for DetailPanel {
             )
             .when(sha_copied, |el| {
                 el.child(
-                    Label::new("Copied!")
+                    Label::new(t!("detail.copied"))
                         .size(LabelSize::XSmall)
                         .color(Color::Success),
                 )
@@ -1549,7 +1550,7 @@ impl Render for DetailPanel {
                                 div()
                                     .id("signed-commit")
                                     .flex_shrink_0()
-                                    .tooltip(Tooltip::text("GPG-signed commit"))
+                                    .tooltip(Tooltip::text(t!("detail.gpg.tooltip")))
                                     .child(
                                         Icon::new(IconName::Lock)
                                             .size(IconSize::XSmall)
@@ -1670,7 +1671,7 @@ impl Render for DetailPanel {
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Finding branches…")
+                        Label::new(t!("detail.finding_branches"))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     ),
@@ -1678,7 +1679,7 @@ impl Render for DetailPanel {
         } else if !contained_filtered.is_empty() {
             let mut contained_row = div().v_flex().gap(px(4.));
             contained_row = contained_row.child(
-                Label::new("CONTAINED IN")
+                Label::new(t!("detail.contained_in"))
                     .size(LabelSize::XSmall)
                     .color(Color::Muted)
                     .weight(gpui::FontWeight::SEMIBOLD),
@@ -1749,7 +1750,7 @@ impl Render for DetailPanel {
                         )
                         .when(summary_copied, |el| {
                             el.child(
-                                Label::new("Copied!")
+                                Label::new(t!("detail.copied"))
                                     .size(LabelSize::XSmall)
                                     .color(Color::Success),
                             )
@@ -1759,7 +1760,7 @@ impl Render for DetailPanel {
                     IconButton::new("cherry-pick-btn", IconName::GitCommit)
                         .size(ButtonSize::Compact)
                         .style(ButtonStyle::Transparent)
-                        .tooltip("Cherry-pick this commit")
+                        .tooltip(t!("detail.cherry_pick.tooltip"))
                         .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
                             cx.emit(DetailPanelEvent::CherryPick(sha_for_cherry.to_string()));
                         })),
@@ -1799,7 +1800,7 @@ impl Render for DetailPanel {
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Description")
+                            Label::new(t!("common.description"))
                                 .size(LabelSize::XSmall)
                                 .weight(gpui::FontWeight::SEMIBOLD)
                                 .color(Color::Muted),
@@ -1829,7 +1830,7 @@ impl Render for DetailPanel {
                         .child(render_markdown(&description, window, cx))
                         .when(desc_copied, |el| {
                             el.child(
-                                Label::new("Copied!")
+                                Label::new(t!("detail.copied"))
                                     .size(LabelSize::XSmall)
                                     .color(Color::Success),
                             )
@@ -1907,7 +1908,7 @@ impl Render for DetailPanel {
                             IconButton::new("clear-search", IconName::X)
                                 .size(ButtonSize::Compact)
                                 .style(ButtonStyle::Transparent)
-                                .tooltip("Clear search (Esc)")
+                                .tooltip(t!("detail.clear_search.tooltip"))
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                     this.clear_file_search(cx);
                                 }))
@@ -1957,7 +1958,7 @@ impl Render for DetailPanel {
                         .items_center()
                         .gap_1()
                         .child(
-                            Label::new("/ to search files")
+                            Label::new(t!("detail.search_files_hint"))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         )
@@ -2558,11 +2559,11 @@ mod tests {
     #[test]
     fn test_file_view_mode_tooltips_describe_next_action() {
         assert_eq!(
-            FileViewMode::Flat.toggle_tooltip(),
+            FileViewMode::Flat.toggle_tooltip().as_ref(),
             "Switch to Tree view (v)"
         );
         assert_eq!(
-            FileViewMode::Tree.toggle_tooltip(),
+            FileViewMode::Tree.toggle_tooltip().as_ref(),
             "Switch to Flat view (v)"
         );
     }
@@ -2570,15 +2571,15 @@ mod tests {
     #[test]
     fn test_file_view_toggle_tooltip_describes_disabled_state() {
         assert_eq!(
-            file_view_toggle_tooltip(0, false, FileViewMode::Flat),
+            file_view_toggle_tooltip(0, false, FileViewMode::Flat).as_ref(),
             "No changed files to display"
         );
         assert_eq!(
-            file_view_toggle_tooltip(2, true, FileViewMode::Flat),
+            file_view_toggle_tooltip(2, true, FileViewMode::Flat).as_ref(),
             "Clear file search to switch views"
         );
         assert_eq!(
-            file_view_toggle_tooltip(2, false, FileViewMode::Flat),
+            file_view_toggle_tooltip(2, false, FileViewMode::Flat).as_ref(),
             "Switch to Tree view (v)"
         );
     }

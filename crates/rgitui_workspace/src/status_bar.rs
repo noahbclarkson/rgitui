@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use gpui::{div, px, App, SharedString, Window};
+use rgitui_i18n::t;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize};
 
@@ -124,7 +125,7 @@ impl StatusBar {
                 );
             if self.head_detached {
                 branch_row = branch_row.child(
-                    Label::new("DETACHED")
+                    Label::new(t!("status_bar.detached"))
                         .size(LabelSize::XSmall)
                         .color(Color::Warning),
                 );
@@ -256,7 +257,7 @@ impl StatusBar {
         let mut right = div().h_flex().items_center().gap(px(10.));
 
         if self.staged_count > 0 {
-            let staged_text: SharedString = format!("{} staged", self.staged_count).into();
+            let staged_text = t!("status_bar.staged", count = self.staged_count);
             right = right.child(
                 div()
                     .h_flex()
@@ -280,7 +281,7 @@ impl StatusBar {
         }
 
         if self.unstaged_count > 0 {
-            let unstaged_text: SharedString = format!("{} changed", self.unstaged_count).into();
+            let unstaged_text = t!("status_bar.changed", count = self.unstaged_count);
             right = right.child(
                 div()
                     .h_flex()
@@ -315,7 +316,7 @@ impl StatusBar {
                             .color(Color::Success),
                     )
                     .child(
-                        Label::new("Clean")
+                        Label::new(t!("status_bar.clean"))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     ),

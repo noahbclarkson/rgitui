@@ -21,6 +21,7 @@ use rgitui_git::{
     ConflictSnapshot, DiffLine, FileDiff, MergeSection, ThreeWayFileDiff, WorktreePatchDirection,
     WorktreePatchScope, WorktreePatchSource,
 };
+use rgitui_i18n::t;
 use rgitui_theme::{ActiveTheme, Appearance, Color, StyledExt, ThemeState};
 use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, EstimatedListScroll, Icon, IconName, IconSize, Label,
@@ -3416,7 +3417,7 @@ impl DiffViewer {
             Some(revision) => format!("Apply or revert this whole file from {revision}").into(),
             None => "Whole-file operations".into(),
         };
-        Button::new("diff-file-menu", "File")
+        Button::new("diff-file-menu", t!("diff.file"))
             .size(ButtonSize::Compact)
             .style(ButtonStyle::Subtle)
             .tooltip(tooltip)
@@ -3570,9 +3571,9 @@ impl Render for DiffViewer {
                 )
                 .child(
                     Label::new(if is_conflict {
-                        "Conflict Resolver"
+                        t!("diff.header.conflict_resolver")
                     } else {
-                        "Diff"
+                        t!("diff.header.diff")
                     })
                     .size(LabelSize::XSmall)
                     .weight(FontWeight::SEMIBOLD)
@@ -3610,7 +3611,7 @@ impl Render for DiffViewer {
                 )
                 .when(is_conflict, |element| {
                     element.child(
-                        Button::new("conflict-error-open", "Open File")
+                        Button::new("conflict-error-open", t!("diff.open_file"))
                             .size(ButtonSize::Compact)
                             .style(ButtonStyle::Outlined)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -3631,12 +3632,12 @@ impl Render for DiffViewer {
                         .color(Color::Placeholder),
                 )
                 .child(
-                    Label::new("Select a file to view changes")
+                    Label::new(t!("diff.empty.title"))
                         .size(LabelSize::Small)
                         .color(Color::Muted),
                 )
                 .child(
-                    Label::new("Click a file in the sidebar or detail panel")
+                    Label::new(t!("diff.empty.description"))
                         .size(LabelSize::XSmall)
                         .color(Color::Placeholder),
                 )
@@ -5207,7 +5208,7 @@ impl Render for DiffViewer {
                                     )),
                             )
                             .child(
-                                Button::new("conflict-open-editor", "Open File")
+                                Button::new("conflict-open-editor", t!("diff.open_file"))
                                     .size(ButtonSize::Compact)
                                     .style(ButtonStyle::Subtle)
                                     .tooltip("Open the working file in your configured editor")

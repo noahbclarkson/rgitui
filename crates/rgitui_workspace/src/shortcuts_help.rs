@@ -17,6 +17,7 @@ use gpui::{
     div, px, ClickEvent, Context, EventEmitter, FocusHandle, FontWeight, Render, SharedString,
     Window,
 };
+use rgitui_i18n::t;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize,
@@ -388,7 +389,7 @@ impl Render for ShortcutsHelp {
                                     .min_w_0()
                                     .gap(px(2.))
                                     .child(
-                                        Label::new("Keyboard Shortcuts")
+                                        Label::new(t!("common.keyboard_shortcuts"))
                                             .size(LabelSize::Large)
                                             .weight(FontWeight::SEMIBOLD),
                                     )
@@ -401,7 +402,7 @@ impl Render for ShortcutsHelp {
                             ),
                     )
                     .child(
-                        Button::new("shortcuts-open-keymap", "Edit keymap.json")
+                        Button::new("shortcuts-open-keymap", t!("common.edit_keymap"))
                             .style(ButtonStyle::Subtle)
                             .size(ButtonSize::Compact)
                             .icon(IconName::Settings)
@@ -473,7 +474,7 @@ impl Render for ShortcutsHelp {
                     .border_color(colors.border_variant)
                     .bg(colors.surface_background)
                     .child(
-                        Label::new("Press Esc or click outside to close")
+                        Label::new(t!("shortcuts.close_hint"))
                             .size(LabelSize::XSmall)
                             .color(Color::Placeholder),
                     )
@@ -481,7 +482,7 @@ impl Render for ShortcutsHelp {
                         palette_hint.filter(|_| viewport_width >= 520.0),
                         |footer, hint| {
                             footer.child(
-                                Label::new(SharedString::from(format!("More actions: {hint}")))
+                                Label::new(t!("shortcuts.more_actions", hint = hint))
                                     .size(LabelSize::XSmall)
                                     .color(Color::Muted),
                             )

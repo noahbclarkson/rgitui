@@ -23,9 +23,17 @@ impl EventEmitter<TextInputEvent> for TextInput {}
 // not wired up. Migrate to wrap GPUI's Editor (single-line mode) or implement
 // EntityInputHandler (replace_text_in_range / replace_and_mark_text_in_range /
 // marked_text_range) and register it via window.register_input_handler.
+/// What an empty [`TextInput`] shows.
+enum Placeholder {
+    Text(SharedString),
+    /// A message key, translated whenever the input renders, so the
+    /// placeholder follows a language change without its owner doing anything.
+    Message(&'static str),
+}
+
 pub struct TextInput {
     text: String,
-    placeholder: SharedString,
+    placeholder: Placeholder,
     cursor: usize,
     selection: Option<usize>,
     dragging: bool,
@@ -46,7 +54,7 @@ impl TextInput {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             text: String::new(),
-            placeholder: "".into(),
+            placeholder: Placeholder::Text(SharedString::default()),
             cursor: 0,
             selection: None,
             dragging: false,
@@ -88,8 +96,16 @@ impl TextInput {
         cx.notify();
     }
 
+    /// Show `placeholder` verbatim when empty. For an example value such as a
+    /// URL or a path; use [`Self::set_placeholder_message`] for prose.
     pub fn set_placeholder(&mut self, placeholder: impl Into<SharedString>) {
-        self.placeholder = placeholder.into();
+        self.placeholder = Placeholder::Text(placeholder.into());
+    }
+
+    /// Show the message `key` in the active language when empty. Pass a key
+    /// from `rgitui_i18n::key!` so it is checked at compile time.
+    pub fn set_placeholder_message(&mut self, key: &'static str) {
+        self.placeholder = Placeholder::Message(key);
     }
 
     pub fn set_font_size(&mut self, size: Pixels) {
@@ -577,7 +593,10 @@ impl Render for TextInput {
         }
 
         let display_text: SharedString = if is_empty {
-            self.placeholder.clone()
+            match &self.placeholder {
+                Placeholder::Text(text) => text.clone(),
+                Placeholder::Message(key) => rgitui_i18n::translate(key),
+            }
         } else if self.masked {
             "*".repeat(self.text.chars().count()).into()
         } else {

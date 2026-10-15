@@ -8,6 +8,7 @@ use gpui::{
     UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::ReflogEntryInfo;
+use rgitui_i18n::t;
 use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, Tooltip};
@@ -143,7 +144,7 @@ impl ReflogView {
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Reflog")
+                        Label::new(t!("reflog.title"))
                             .size(LabelSize::XSmall)
                             .weight(gpui::FontWeight::SEMIBOLD)
                             .color(Color::Muted),
@@ -165,12 +166,12 @@ impl ReflogView {
                                 .color(Color::Placeholder),
                         )
                         .child(
-                            Label::new("No reflog entries")
+                            Label::new(t!("reflog.empty"))
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Reflog tracks HEAD changes")
+                            Label::new(t!("reflog.hint"))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         ),
@@ -239,8 +240,7 @@ impl Render for ReflogView {
                         let message_display: SharedString = message_str.clone().into();
                         let committer_display: SharedString = entry.committer.clone().into();
                         let time_display: SharedString =
-                            super::time::format_relative_time_abbreviated(entry.time.timestamp())
-                                .into();
+                            super::time::format_relative_time_abbreviated(entry.time.timestamp());
 
                         let tooltip_text: SharedString = format!(
                             "{} -> {}\n{}\n{}",
@@ -403,7 +403,7 @@ impl Render for ReflogView {
                             .color(Color::Accent),
                     )
                     .child(
-                        Label::new("Reflog")
+                        Label::new(t!("reflog.title"))
                             .size(LabelSize::XSmall)
                             .weight(gpui::FontWeight::SEMIBOLD)
                             .color(Color::Default),

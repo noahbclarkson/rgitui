@@ -8,6 +8,7 @@ use gpui::{
     ScrollStrategy, SharedString, Styled, UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{BisectDecision, BisectLogEntry};
+use rgitui_i18n::{t, tp};
 use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, Tooltip};
@@ -164,14 +165,14 @@ impl BisectView {
                     .color(Color::Accent),
             )
             .child(
-                Label::new("Bisect")
+                Label::new(t!("bisect.title"))
                     .size(LabelSize::XSmall)
                     .weight(gpui::FontWeight::SEMIBOLD)
                     .color(Color::Default),
             )
             .when(start > 0, |el| {
                 el.child(
-                    Label::new("started")
+                    Label::new(t!("bisect.started"))
                         .size(LabelSize::XSmall)
                         .color(Color::Muted),
                 )
@@ -179,13 +180,13 @@ impl BisectView {
             .child(div().flex_1())
             // Bad count
             .child(
-                Label::new(format!("{} bad", bad))
+                Label::new(t!("bisect.bad", count = bad))
                     .size(LabelSize::XSmall)
                     .color(if bad > 0 { Color::Error } else { Color::Muted }),
             )
             // Good count
             .child(
-                Label::new(format!("{} good", good))
+                Label::new(t!("bisect.good", count = good))
                     .size(LabelSize::XSmall)
                     .color(if good > 0 {
                         Color::Success
@@ -196,7 +197,7 @@ impl BisectView {
             // Skip count
             .when(skip > 0, |el| {
                 el.child(
-                    Label::new(format!("{} skip", skip))
+                    Label::new(t!("bisect.skip", count = skip))
                         .size(LabelSize::XSmall)
                         .color(Color::Warning),
                 )
@@ -204,14 +205,14 @@ impl BisectView {
             // Remaining steps
             .when(remaining > 0, |el| {
                 el.child(
-                    Label::new(format!("~{} steps left", remaining))
+                    Label::new(tp!("bisect.steps_left", remaining))
                         .size(LabelSize::XSmall)
                         .color(Color::Accent),
                 )
             })
             // Entry count
             .child(
-                Label::new(format!("{} entries", count))
+                Label::new(tp!("bisect.entries", count))
                     .size(LabelSize::XSmall)
                     .color(Color::Placeholder),
             )
@@ -242,12 +243,12 @@ impl BisectView {
                                 .color(Color::Placeholder),
                         )
                         .child(
-                            Label::new("No bisect in progress")
+                            Label::new(t!("bisect.empty"))
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Use 'Git: Bisect Start' to begin")
+                            Label::new(t!("bisect.empty_hint"))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         ),
@@ -298,13 +299,12 @@ impl Render for BisectView {
 
                         let sha_display: SharedString = entry.sha.clone().into();
 
-                        let decision_str = match entry.decision {
-                            BisectDecision::Start => "start",
-                            BisectDecision::Good => "good",
-                            BisectDecision::Bad => "bad",
-                            BisectDecision::Skip => "skip",
+                        let decision_display = match entry.decision {
+                            BisectDecision::Start => t!("bisect.decision.start"),
+                            BisectDecision::Good => t!("bisect.decision.good"),
+                            BisectDecision::Bad => t!("bisect.decision.bad"),
+                            BisectDecision::Skip => t!("bisect.decision.skip"),
                         };
-                        let decision_display: SharedString = decision_str.into();
 
                         let decision_color = match entry.decision {
                             BisectDecision::Start => text_muted,
@@ -322,7 +322,7 @@ impl Render for BisectView {
                         let tooltip_text: SharedString = format!(
                             "{} — {}\n{}",
                             &entry.sha[..entry.sha.len().min(7)],
-                            decision_str,
+                            decision_display,
                             subject_str,
                         )
                         .into();

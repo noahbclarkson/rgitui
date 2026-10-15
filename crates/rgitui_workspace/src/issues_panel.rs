@@ -13,6 +13,7 @@ use crate::github_data_service::{
 };
 use crate::markdown_view::render_markdown;
 use gpui::Entity;
+use rgitui_i18n::{key, t, tp};
 use rgitui_theme::{hex_to_hsla_strict, ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize,
@@ -76,11 +77,12 @@ impl IssueFilter {
         }
     }
 
-    fn label(&self) -> &str {
+    /// The filter's label in the active language.
+    fn label(&self) -> SharedString {
         match self {
-            IssueFilter::Open => "Open",
-            IssueFilter::Closed => "Closed",
-            IssueFilter::All => "All",
+            IssueFilter::Open => t!("common.filter.open"),
+            IssueFilter::Closed => t!("common.filter.closed"),
+            IssueFilter::All => t!("common.filter.all"),
         }
     }
 }
@@ -202,7 +204,7 @@ impl IssuesPanel {
             query_input: {
                 let query_input = cx.new(|cx| {
                     let mut ti = TextInput::new(cx);
-                    ti.set_placeholder("Search issues...");
+                    ti.set_placeholder_message(key!("issues.search.placeholder"));
                     ti
                 });
                 let input = query_input.clone();
@@ -739,7 +741,7 @@ impl IssuesPanel {
                         })),
                 )
                 .child(
-                    Label::new("Issue Detail")
+                    Label::new(t!("issues.detail"))
                         .size(LabelSize::Small)
                         .weight(gpui::FontWeight::SEMIBOLD)
                         .color(Color::Default),
@@ -770,7 +772,7 @@ impl IssuesPanel {
                     .color(Color::Accent),
             )
             .child(
-                Label::new("Issues")
+                Label::new(t!("common.issues"))
                     .size(LabelSize::Small)
                     .weight(gpui::FontWeight::SEMIBOLD)
                     .color(Color::Default),
@@ -796,7 +798,7 @@ impl IssuesPanel {
                         .border_color(colors.border_variant)
                         .overflow_hidden()
                         .child(
-                            Button::new("filter-open", "Open")
+                            Button::new("filter-open", IssueFilter::Open.label())
                                 .size(ButtonSize::Compact)
                                 .style(if is_open {
                                     ButtonStyle::Filled
@@ -808,7 +810,7 @@ impl IssuesPanel {
                                 })),
                         )
                         .child(
-                            Button::new("filter-closed", "Closed")
+                            Button::new("filter-closed", IssueFilter::Closed.label())
                                 .size(ButtonSize::Compact)
                                 .style(if is_closed {
                                     ButtonStyle::Filled
@@ -820,7 +822,7 @@ impl IssuesPanel {
                                 })),
                         )
                         .child(
-                            Button::new("filter-all", "All")
+                            Button::new("filter-all", IssueFilter::All.label())
                                 .size(ButtonSize::Compact)
                                 .style(if is_all {
                                     ButtonStyle::Filled
@@ -847,7 +849,7 @@ impl IssuesPanel {
                 IconButton::new("issues-search", IconName::Search)
                     .size(ButtonSize::Compact)
                     .style(ButtonStyle::Subtle)
-                    .tooltip("Search issues")
+                    .tooltip(t!("issues.search.tooltip"))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.toggle_search(cx);
                     })),
@@ -880,8 +882,16 @@ impl IssuesPanel {
         let created: SharedString = issue.created_at.clone().into();
 
         let (state_label, state_icon, state_color) = match issue.state {
-            IssueState::Open => ("Open", IconName::DotOutline, Color::Success),
-            IssueState::Closed => ("Closed", IconName::CheckCircle, Color::Accent),
+            IssueState::Open => (
+                t!("common.filter.open"),
+                IconName::DotOutline,
+                Color::Success,
+            ),
+            IssueState::Closed => (
+                t!("common.filter.closed"),
+                IconName::CheckCircle,
+                Color::Accent,
+            ),
         };
 
         let mut content = div()
@@ -937,7 +947,7 @@ impl IssuesPanel {
                                 .size(IconSize::XSmall)
                                 .color(state_color),
                         )
-                        .child(Badge::new(SharedString::from(state_label)).color(state_color)),
+                        .child(Badge::new(state_label).color(state_color)),
                 )
                 .child(
                     div()
@@ -1013,13 +1023,13 @@ impl IssuesPanel {
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Loading comments...")
+                        Label::new(t!("common.comments.loading"))
                             .size(LabelSize::Small)
                             .color(Color::Muted),
                     ),
             );
         } else if let Some(err) = &self.comments_error {
-            let err_text: SharedString = format!("Failed to load comments: {err}").into();
+            let err_text = t!("common.comments.failed", error = err);
             content = content.child(
                 div()
                     .h_flex()
@@ -1041,12 +1051,7 @@ impl IssuesPanel {
             );
         } else if !self.selected_comments.is_empty() {
             let comment_count = self.selected_comments.len();
-            let comments_header: SharedString = format!(
-                "{} comment{}",
-                comment_count,
-                if comment_count == 1 { "" } else { "s" }
-            )
-            .into();
+            let comments_header = tp!("common.comments.count", comment_count);
             content = content.child(
                 div()
                     .h_flex()
@@ -1124,8 +1129,8 @@ impl IssuesPanel {
     fn render_empty_state(
         &self,
         icon: IconName,
-        title: &str,
-        subtitle: &str,
+        title: SharedString,
+        subtitle: SharedString,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let colors = cx.colors();
@@ -1226,8 +1231,8 @@ impl Render for IssuesPanel {
             return panel
                 .child(self.render_empty_state(
                     IconName::Settings,
-                    "Sign in to view issues",
-                    "This repository is private or rate-limited. Add a GitHub token in Settings — for organization repos you may need a fine-grained token approved by an org owner.",
+                    t!("issues.sign_in"),
+                    t!("common.github_auth.description"),
                     cx,
                 ))
                 .into_any_element();
@@ -1271,7 +1276,7 @@ impl Render for IssuesPanel {
                                     ),
                                 )
                                 .child(
-                                    Button::new("retry-issues", "Retry")
+                                    Button::new("retry-issues", t!("common.retry"))
                                         .icon(IconName::Refresh)
                                         .size(ButtonSize::Default)
                                         .style(ButtonStyle::Filled)
@@ -1286,12 +1291,16 @@ impl Render for IssuesPanel {
         }
 
         if self.issues.is_empty() {
-            let empty_msg = format!("No {} issues found", self.filter.label().to_lowercase());
+            let empty_msg = match &self.filter {
+                IssueFilter::Open => t!("issues.empty.open"),
+                IssueFilter::Closed => t!("issues.empty.closed"),
+                IssueFilter::All => t!("issues.empty.all"),
+            };
             return panel
                 .child(self.render_empty_state(
                     IconName::CheckCircle,
-                    &empty_msg,
-                    "Try a different filter or check back later",
+                    empty_msg,
+                    t!("common.try_another_filter"),
                     cx,
                 ))
                 .into_any_element();
@@ -1744,9 +1753,9 @@ mod tests {
 
     #[test]
     fn test_issue_filter_label() {
-        assert_eq!(IssueFilter::Open.label(), "Open");
-        assert_eq!(IssueFilter::Closed.label(), "Closed");
-        assert_eq!(IssueFilter::All.label(), "All");
+        assert_eq!(IssueFilter::Open.label().as_ref(), "Open");
+        assert_eq!(IssueFilter::Closed.label().as_ref(), "Closed");
+        assert_eq!(IssueFilter::All.label().as_ref(), "All");
     }
 
     #[test]

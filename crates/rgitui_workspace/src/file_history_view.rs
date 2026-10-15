@@ -8,6 +8,7 @@ use gpui::{
     UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::CommitInfo;
+use rgitui_i18n::{t, tp};
 use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize};
@@ -154,7 +155,7 @@ impl FileHistoryView {
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("File History")
+                        Label::new(t!("file_history.title"))
                             .size(LabelSize::XSmall)
                             .weight(gpui::FontWeight::SEMIBOLD)
                             .color(Color::Muted),
@@ -176,12 +177,12 @@ impl FileHistoryView {
                                 .color(Color::Placeholder),
                         )
                         .child(
-                            Label::new("Select a file to view history")
+                            Label::new(t!("file_history.empty"))
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Press 'h' on a file to see commits")
+                            Label::new(t!("file_history.empty_hint"))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         ),
@@ -248,8 +249,7 @@ impl Render for FileHistoryView {
                         // Author column: no pre-truncation; CSS handles overflow with ellipsis via .overflow_x_hidden()
                         let author_display: SharedString = commit.author.name.clone().into();
                         let time_display: SharedString =
-                            super::time::format_relative_time_abbreviated(commit.time.timestamp())
-                                .into();
+                            super::time::format_relative_time_abbreviated(commit.time.timestamp());
 
                         let view_click = view.clone();
                         let view_commit = view.clone();
@@ -400,7 +400,7 @@ impl Render for FileHistoryView {
                             .color(Color::Accent),
                     )
                     .child(
-                        Label::new("File History")
+                        Label::new(t!("file_history.title"))
                             .size(LabelSize::XSmall)
                             .weight(gpui::FontWeight::SEMIBOLD)
                             .color(Color::Default),
@@ -412,7 +412,7 @@ impl Render for FileHistoryView {
                     )
                     .child(div().flex_1())
                     .child(
-                        Label::new(SharedString::from(format!("{} commits", count)))
+                        Label::new(tp!("file_history.commits", count))
                             .size(LabelSize::XSmall)
                             .color(Color::Placeholder),
                     ),

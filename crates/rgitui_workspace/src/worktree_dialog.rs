@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Render, Window};
+use rgitui_i18n::{key, t};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput,
@@ -41,19 +42,19 @@ impl WorktreeDialog {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let name_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Worktree name (e.g. feature-x)...");
+            ti.set_placeholder_message(key!("worktree_dialog.name.placeholder"));
             ti
         });
 
         let path_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Directory path (e.g. /home/user/projects/myrepo-feature-x)...");
+            ti.set_placeholder_message(key!("worktree_dialog.path.placeholder"));
             ti
         });
 
         let branch_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Branch (optional, defaults to current branch)...");
+            ti.set_placeholder_message(key!("worktree_dialog.branch.placeholder"));
             ti
         });
 
@@ -270,7 +271,7 @@ impl Render for WorktreeDialog {
                         ),
                 )
                 .child(
-                    Label::new("New Worktree")
+                    Label::new(t!("common.new_worktree"))
                         .size(LabelSize::Large)
                         .color(Color::Default),
                 ),
@@ -283,7 +284,7 @@ impl Render for WorktreeDialog {
                 .v_flex()
                 .gap_1()
                 .child(
-                    Label::new("Name")
+                    Label::new(t!("common.name"))
                         .size(LabelSize::Small)
                         .color(Color::Muted),
                 )
@@ -297,7 +298,7 @@ impl Render for WorktreeDialog {
                 .v_flex()
                 .gap_1()
                 .child(
-                    Label::new("Directory Path")
+                    Label::new(t!("worktree_dialog.path"))
                         .size(LabelSize::Small)
                         .color(Color::Muted),
                 )
@@ -311,7 +312,7 @@ impl Render for WorktreeDialog {
                 .v_flex()
                 .gap_1()
                 .child(
-                    Label::new("Branch (optional)")
+                    Label::new(t!("worktree_dialog.branch"))
                         .size(LabelSize::Small)
                         .color(Color::Muted),
                 )
@@ -336,7 +337,7 @@ impl Render for WorktreeDialog {
                 .justify_end()
                 .gap_2()
                 .child(
-                    Button::new("worktree-dialog-cancel", "Cancel")
+                    Button::new("worktree-dialog-cancel", t!("common.cancel"))
                         .style(ButtonStyle::Subtle)
                         .size(ButtonSize::Compact)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -344,7 +345,7 @@ impl Render for WorktreeDialog {
                         })),
                 )
                 .child(
-                    Button::new("worktree-dialog-create", "Create")
+                    Button::new("worktree-dialog-create", t!("worktree_dialog.create"))
                         .style(if can_create {
                             ButtonStyle::Tinted(TintColor::Accent)
                         } else {
