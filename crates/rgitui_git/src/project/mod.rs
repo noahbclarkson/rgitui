@@ -8,6 +8,7 @@ mod diff;
 mod file_history;
 mod history_cache;
 mod local_ops;
+mod messages;
 mod network;
 mod rebase;
 mod reflog;
@@ -20,6 +21,8 @@ mod worktree_patch;
 use anyhow::{Context as _, Result};
 use git2::{Repository, StatusOptions};
 use gpui::{AsyncApp, Context, EventEmitter, Task, WeakEntity};
+use messages::{error, error_message};
+use rgitui_i18n::{msg, Message};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -152,11 +155,11 @@ fn parse_remote_tracking_ref(name: &str) -> Option<(String, String)> {
 fn head_branch_name(repo: &Repository) -> Result<String> {
     let head = repo.head()?;
     if !head.is_branch() {
-        anyhow::bail!("HEAD is detached. Switch to a branch before running this operation.");
+        return Err(error(msg!("git.error.head_detached")));
     }
     head.shorthand()
         .map(str::to_string)
-        .ok_or_else(|| anyhow::anyhow!("Failed to determine the current branch name"))
+        .ok_or_else(|| error(msg!("git.error.branch_name_unknown")))
 }
 
 /// Whether the working tree or index carries changes to **tracked** files.
@@ -181,13 +184,12 @@ fn repo_has_worktree_changes(repo: &Repository) -> Result<bool> {
     Ok(!repo.statuses(Some(&mut opts))?.is_empty())
 }
 
-fn ensure_clean_worktree(repo: &Repository, operation: &str) -> Result<()> {
+fn ensure_clean_worktree(repo: &Repository, operation: Message) -> Result<()> {
     if repo_has_worktree_changes(repo)? {
-        anyhow::bail!(
-            "{} requires a clean working tree. Commit, stash, or discard your changes to \
-             tracked files first.",
-            operation
-        );
+        return Err(error(msg!(
+            "git.error.clean_worktree_required",
+            operation = &operation
+        )));
     }
     Ok(())
 }
@@ -206,7 +208,7 @@ fn default_remote_name(repo: &Repository) -> Result<String> {
 
     let remote_names = repo.remotes()?;
     if remote_names.is_empty() {
-        anyhow::bail!("No remotes configured. Add one with: git remote add origin <url>")
+        return Err(error(msg!("git.error.no_remotes")));
     }
 
     if remote_names.iter().flatten().any(|name| name == "origin") {
@@ -218,7 +220,7 @@ fn default_remote_name(repo: &Repository) -> Result<String> {
         .flatten()
         .next()
         .map(str::to_string)
-        .ok_or_else(|| anyhow::anyhow!("No usable git remotes are configured."))?;
+        .ok_or_else(|| error(msg!("git.error.no_usable_remotes")))?;
     // Read straight out of .git/config, which git does not validate.
     validate_remote_name(&name)?;
     Ok(name)
@@ -496,7 +498,7 @@ impl GitProject {
     pub(crate) fn begin_operation(
         &mut self,
         kind: GitOperationKind,
-        summary: impl Into<String>,
+        summary: Message,
         remote_name: Option<String>,
         branch_name: Option<String>,
         cx: &mut Context<Self>,
@@ -507,7 +509,7 @@ impl GitProject {
             id,
             kind,
             state: GitOperationState::Running,
-            summary: summary.into(),
+            summary,
             details: None,
             remote_name,
             branch_name,
@@ -542,15 +544,15 @@ impl GitProject {
         &self,
         id: u64,
         kind: GitOperationKind,
-        summary: impl Into<String>,
-        names: (Option<String>, Option<String>, Option<String>),
+        summary: Message,
+        names: (Option<Message>, Option<String>, Option<String>),
         cx: &mut Context<Self>,
     ) {
         cx.emit(GitProjectEvent::OperationUpdated(GitOperationUpdate {
             id,
             kind,
             state: GitOperationState::Succeeded,
-            summary: summary.into(),
+            summary,
             details: names.0,
             remote_name: names.1,
             branch_name: names.2,
@@ -563,8 +565,8 @@ impl GitProject {
         &self,
         id: u64,
         kind: GitOperationKind,
-        summary: impl Into<String>,
-        error: impl Into<String>,
+        summary: Message,
+        error: Message,
         names: (Option<String>, Option<String>, bool),
         cx: &mut Context<Self>,
     ) {
@@ -572,8 +574,8 @@ impl GitProject {
             id,
             kind,
             state: GitOperationState::Failed,
-            summary: summary.into(),
-            details: Some(error.into()),
+            summary,
+            details: Some(error),
             remote_name: names.0,
             branch_name: names.1,
             worktree_path: self.operation_worktree(id),
@@ -588,22 +590,22 @@ impl GitProject {
     pub(crate) fn fail_to_start_task(
         &mut self,
         kind: GitOperationKind,
-        summary: impl Into<String>,
+        summary: Message,
         error: anyhow::Error,
         retryable: bool,
         worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        let summary = summary.into();
         let branch_name = self.head_branch_at(worktree_path);
         let operation_id =
             self.begin_operation(kind, summary.clone(), None, branch_name.clone(), cx);
         self.note_operation_worktree(operation_id, worktree_path);
+        let details = error_message(&error);
         self.fail_op(
             operation_id,
             kind,
             summary,
-            error.to_string(),
+            details,
             (None, branch_name, retryable),
             cx,
         );
@@ -1881,7 +1883,11 @@ mod tests {
             !super::repo_has_worktree_changes(repo).unwrap(),
             "untracked files must not count as worktree changes"
         );
-        assert!(super::ensure_clean_worktree(repo, "Checkout").is_ok());
+        assert!(super::ensure_clean_worktree(
+            repo,
+            crate::types::GitOperationKind::Checkout.name()
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1890,7 +1896,11 @@ mod tests {
         fixture.write_file("tracked.txt", "edited\n");
 
         assert!(super::repo_has_worktree_changes(fixture.repo()).unwrap());
-        let err = super::ensure_clean_worktree(fixture.repo(), "Checkout").unwrap_err();
+        let err = super::ensure_clean_worktree(
+            fixture.repo(),
+            crate::types::GitOperationKind::Checkout.name(),
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("Checkout"));
     }
 

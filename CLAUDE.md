@@ -62,6 +62,6 @@ Example flow: `GraphView` emits `CommitSelected(oid)` → `subscribe_graph` spaw
 ### Conventions
 
 - Entities are named `XxxView`/`XxxPanel`/`XxxDialog`, each with a sibling `XxxEvent`; workspace subscriptions live in `workspace/events.rs`.
-- Errors surface to the user as toasts (`Workspace::show_toast`) via failed `OperationUpdated` events; write user-facing error strings as actionable sentences at the git layer.
+- Errors surface to the user as toasts (`Workspace::show_toast`) via failed `OperationUpdated` events; write user-facing error strings as actionable sentences at the git layer. Operation summaries and details are `rgitui_i18n::Message`s built with `msg!`/`msgp!` (they can be built on background threads), and a user-facing error is `messages::error(msg!(…))`; the workspace translates them where it shows them. Raw git output goes in as `Message::verbatim`. Outcomes travel as typed values, never as prefixes matched in the text.
 - Shared snapshots are `Arc`-wrapped rather than cloned.
 - Prefer extracting view logic into pure, GPUI-free helper functions so it can be unit-tested without a display.

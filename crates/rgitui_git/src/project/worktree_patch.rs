@@ -33,6 +33,8 @@
 //! and conflicts only where an edit overlaps the selected region. The index is
 //! never touched and never has to match the working tree.
 
+use super::messages::{error, error_message};
+use rgitui_i18n::{msg, msgp, Message};
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io::{Seek as _, Write as _};
@@ -60,22 +62,6 @@ pub enum WorktreePatchDirection {
 }
 
 impl WorktreePatchDirection {
-    /// Verb used in progress and success messages ("Applying", "Applied").
-    pub fn present_participle(self) -> &'static str {
-        match self {
-            WorktreePatchDirection::Apply => "Applying",
-            WorktreePatchDirection::Revert => "Reverting",
-        }
-    }
-
-    /// Verb used in success messages.
-    pub fn past_tense(self) -> &'static str {
-        match self {
-            WorktreePatchDirection::Apply => "Applied",
-            WorktreePatchDirection::Revert => "Reverted",
-        }
-    }
-
     fn verb(self) -> &'static str {
         match self {
             WorktreePatchDirection::Apply => "apply",
@@ -111,15 +97,11 @@ pub enum WorktreePatchScope {
 
 impl WorktreePatchScope {
     /// Human-readable description used in operation summaries and toasts.
-    pub fn describe(&self) -> String {
+    pub fn describe(&self) -> Message {
         match self {
-            WorktreePatchScope::File => "all changes".to_string(),
-            WorktreePatchScope::Hunk(index) => format!("hunk {}", index + 1),
-            WorktreePatchScope::Lines(pairs) => format!(
-                "{} line{}",
-                pairs.len(),
-                if pairs.len() == 1 { "" } else { "s" }
-            ),
+            WorktreePatchScope::File => msg!("git.patch.scope.all"),
+            WorktreePatchScope::Hunk(index) => msg!("git.patch.scope.hunk", hunk = index + 1),
+            WorktreePatchScope::Lines(pairs) => msgp!("git.patch.scope.lines", pairs.len()),
         }
     }
 }
@@ -1210,7 +1192,9 @@ pub fn apply_worktree_patch(
         match three_way_merge(&repo, file_path, &base_text, &ours_text, &target_text)? {
             Some(merged) => merged,
             None => {
-                anyhow::bail!(conflict_message(&repo, file_path, scope, source, direction));
+                return Err(error(conflict_message(
+                    &repo, file_path, scope, source, direction,
+                )));
             }
         }
     } else {
@@ -1224,7 +1208,9 @@ pub fn apply_worktree_patch(
     // disagreeing with the working tree for reasons that are none of its
     // business.
     if merged_text == ours_text {
-        anyhow::bail!(already_applied_message(file_path, scope, source, direction));
+        return Err(error(already_applied_message(
+            file_path, scope, source, direction,
+        )));
     }
 
     let worktree_bytes = smudge_canonical_bytes(&workdir, file_path, merged_text.as_bytes())?;
@@ -1358,22 +1344,25 @@ fn already_applied_message(
     scope: &WorktreePatchScope,
     source: &WorktreePatchSource,
     direction: WorktreePatchDirection,
-) -> String {
+) -> Message {
+    let (path, scope, source) = (file_path.display(), scope.describe(), source.label());
     match direction {
-        WorktreePatchDirection::Apply => format!(
-            "{} already matches {} for {} — there is nothing to apply. Press r to revert it \
-             instead.",
-            file_path.display(),
-            source.label(),
-            scope.describe()
-        ),
-        WorktreePatchDirection::Revert => format!(
-            "{}'s {} from {} is already absent from the working tree — there is nothing to \
-             revert. Press a to apply it instead.",
-            file_path.display(),
-            scope.describe(),
-            source.label()
-        ),
+        WorktreePatchDirection::Apply => {
+            msg!(
+                "git.patch.nothing_to_apply",
+                path = path,
+                source = &source,
+                scope = &scope
+            )
+        }
+        WorktreePatchDirection::Revert => {
+            msg!(
+                "git.patch.nothing_to_revert",
+                path = path,
+                scope = &scope,
+                source = &source
+            )
+        }
     }
 }
 
@@ -1383,7 +1372,7 @@ fn conflict_message(
     scope: &WorktreePatchScope,
     source: &WorktreePatchSource,
     direction: WorktreePatchDirection,
-) -> String {
+) -> Message {
     let dirty = repo
         .status_file(file_path)
         .map(|status| {
@@ -1397,28 +1386,37 @@ fn conflict_message(
         })
         .unwrap_or(false);
 
-    if dirty {
-        // A conflicting local edit: the user has uncommitted work in the same
-        // place. Naming the file tells them exactly what to park.
-        format!(
-            "Can't {} {} of {}: your uncommitted edits to that file overlap it. Commit or stash \
-             {}, then try again.",
-            direction.verb(),
-            scope.describe(),
-            file_path.display(),
-            file_path.display()
-        )
-    } else {
-        // A context mismatch: the file is clean, so the patch does not fit
-        // because the file itself has moved on since that revision.
-        format!(
-            "Can't {} {} of {}: the surrounding lines have changed since {}, so the patch no \
-             longer fits cleanly. Select a closer revision or make the change manually.",
-            direction.verb(),
-            scope.describe(),
-            file_path.display(),
-            source.label()
-        )
+    let (path, scope, source) = (file_path.display(), scope.describe(), source.label());
+    // A dirty file means the user's uncommitted work sits in the same place,
+    // so naming the file tells them exactly what to park. A clean file means
+    // the file itself has moved on since that revision.
+    match (direction, dirty) {
+        (WorktreePatchDirection::Apply, true) => {
+            msg!(
+                "git.patch.conflict.apply_dirty",
+                scope = &scope,
+                path = path
+            )
+        }
+        (WorktreePatchDirection::Revert, true) => {
+            msg!(
+                "git.patch.conflict.revert_dirty",
+                scope = &scope,
+                path = path
+            )
+        }
+        (WorktreePatchDirection::Apply, false) => msg!(
+            "git.patch.conflict.apply_moved",
+            scope = &scope,
+            path = path,
+            source = &source
+        ),
+        (WorktreePatchDirection::Revert, false) => msg!(
+            "git.patch.conflict.revert_moved",
+            scope = &scope,
+            path = path,
+            source = &source
+        ),
     }
 }
 
@@ -1472,13 +1470,20 @@ impl GitProject {
         let source_label = source.label();
         let operation_id = self.begin_operation(
             kind,
-            format!(
-                "{} {} of {} from {}...",
-                direction.present_participle(),
-                scope_text,
-                file_path.display(),
-                source_label
-            ),
+            match direction {
+                WorktreePatchDirection::Apply => msg!(
+                    "git.patch.applying",
+                    scope = &scope_text,
+                    path = file_path.display(),
+                    source = &source_label
+                ),
+                WorktreePatchDirection::Revert => msg!(
+                    "git.patch.reverting",
+                    scope = &scope_text,
+                    path = file_path.display(),
+                    source = &source_label
+                ),
+            },
             None,
             branch_name.clone(),
             cx,
@@ -1516,22 +1521,33 @@ impl GitProject {
                 this.update(cx, |this, cx| {
                     match result {
                         Ok((outcome, refresh_result)) => {
-                            let mut summary = format!(
-                                "{} {} of {} from {}",
-                                direction.past_tense(),
-                                scope_text,
-                                file_path.display(),
-                                source_label
-                            );
+                            let mut summary = match direction {
+                                WorktreePatchDirection::Apply => msg!(
+                                    "git.patch.applied",
+                                    scope = &scope_text,
+                                    path = file_path.display(),
+                                    source = &source_label
+                                ),
+                                WorktreePatchDirection::Revert => msg!(
+                                    "git.patch.reverted",
+                                    scope = &scope_text,
+                                    path = file_path.display(),
+                                    source = &source_label
+                                ),
+                            };
                             if outcome.merged_with_local_changes {
-                                summary.push_str(
-                                    " — merged around your uncommitted edits to that file",
+                                summary = msg!(
+                                    "git.patch.with_note",
+                                    summary = summary,
+                                    note = msg!("git.patch.note.merged")
                                 );
                             }
                             let undoable = snapshots_fit_undo_stack(&outcome.snapshots);
                             if !undoable {
-                                summary.push_str(
-                                    "; Undo is unavailable because the before/after snapshot exceeds 4 MiB",
+                                summary = msg!(
+                                    "git.patch.with_note",
+                                    summary = summary,
+                                    note = msg!("git.patch.note.no_undo")
                                 );
                             }
                             let refresh_succeeded = match refresh_result {
@@ -1543,8 +1559,10 @@ impl GitProject {
                                     log::warn!(
                                         "worktree patch succeeded but status refresh failed: {error:#}"
                                     );
-                                    summary.push_str(
-                                        "; the file changed successfully, but status refresh failed; refresh the repository to update the UI",
+                                    summary = msg!(
+                                        "git.patch.with_note",
+                                        summary = summary,
+                                        note = msg!("git.patch.note.refresh_failed")
                                     );
                                     false
                                 }
@@ -1558,7 +1576,7 @@ impl GitProject {
                             );
                             if undoable {
                                 cx.emit(GitProjectEvent::WorktreePatchApplied {
-                                    label: summary,
+                                    label: summary.translated().to_string(),
                                     snapshots: outcome.snapshots,
                                     repo_path: origin_repo_path.clone(),
                                     worktree_path: origin_worktree_path.clone(),
@@ -1572,8 +1590,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 kind,
-                                format!("{} failed", kind.display_name()),
-                                e.to_string(),
+                                msg!("git.patch.failed", operation = kind.name()),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -1602,11 +1620,7 @@ impl GitProject {
         let file_count = snapshots.len();
         let operation_id = self.begin_operation(
             GitOperationKind::Discard,
-            format!(
-                "Restoring {} file{}...",
-                file_count,
-                if file_count == 1 { "" } else { "s" }
-            ),
+            msgp!("git.restore.running", file_count),
             None,
             branch_name.clone(),
             cx,
@@ -1637,27 +1651,13 @@ impl GitProject {
                             let (summary, refresh_succeeded) = match refresh_result {
                                 Ok(data) => {
                                     this.apply_refresh_data(data);
-                                    (
-                                        format!(
-                                            "Restored {} file{}",
-                                            file_count,
-                                            if file_count == 1 { "" } else { "s" }
-                                        ),
-                                        true,
-                                    )
+                                    (msgp!("git.restore.done", file_count), true)
                                 }
                                 Err(error) => {
                                     log::warn!(
                                         "worktree restore succeeded but status refresh failed: {error:#}"
                                     );
-                                    (
-                                        format!(
-                                            "Restored {} file{}; status refresh failed, so refresh the repository to update the UI",
-                                            file_count,
-                                            if file_count == 1 { "" } else { "s" }
-                                        ),
-                                        false,
-                                    )
+                                    (msgp!("git.restore.done_refresh_failed", file_count), false)
                                 }
                             };
                             this.complete_op(
@@ -1675,8 +1675,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Discard,
-                                "Restore failed",
-                                e.to_string(),
+                                msg!("git.restore.failed"),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -2007,14 +2007,18 @@ mod tests {
 
     #[test]
     fn scope_descriptions_read_as_prose() {
-        assert_eq!(WorktreePatchScope::File.describe(), "all changes");
-        assert_eq!(WorktreePatchScope::Hunk(0).describe(), "hunk 1");
+        assert_eq!(WorktreePatchScope::File.describe().english(), "all changes");
+        assert_eq!(WorktreePatchScope::Hunk(0).describe().english(), "hunk 1");
         assert_eq!(
-            WorktreePatchScope::Lines(vec![(None, Some(1))]).describe(),
+            WorktreePatchScope::Lines(vec![(None, Some(1))])
+                .describe()
+                .english(),
             "1 line"
         );
         assert_eq!(
-            WorktreePatchScope::Lines(vec![(None, Some(1)), (Some(2), None)]).describe(),
+            WorktreePatchScope::Lines(vec![(None, Some(1)), (Some(2), None)])
+                .describe()
+                .english(),
             "2 lines"
         );
     }
