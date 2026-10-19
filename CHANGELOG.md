@@ -1,16 +1,28 @@
 ## [Unreleased]
 
+### Added
+
+- **The interface can be shown in another language.** *Settings → Appearance →
+  Language* lists *Match system language* and every installed translation,
+  each written in its own script with a count of the strings it still leaves
+  in English. Switching applies at once, without a restart. New installs and
+  existing settings follow the OS language; a Traditional Chinese system stays
+  in English rather than being given Simplified characters. Simplified Chinese
+  ships first. Translations are JSON files under `assets/locales/`, and a file
+  in `<config>/rgitui/locales/` is layered over the shipped one, so a
+  translator can work against a release build. (#57)
+
 ### Fixed
 
 - **Retrying a failed force push pushed without `--force`.** The retry decided
   whether to force by looking for "force push" in the failure message, which
   never contained it, so the retry was a plain push that the remote rejected.
-  A force push is now its own kind of operation and its retry repeats it.
+  A force push is now its own kind of operation and its retry repeats it. (#90)
 - **Conflicts, auth failures and up-to-date pulls were missed when git speaks
   another language.** rgitui recognises these by git's English output, and a
   localized git translates them; ahead/behind counts were lost the same way.
   git is now run with `LC_MESSAGES=C`, so its messages are always English
-  while dates, sorting and encodings stay as the user has them.
+  while dates, sorting and encodings stay as the user has them. (#90)
 
 ## [0.5.0] - 2026-10-07
 
