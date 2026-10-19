@@ -70,7 +70,7 @@ pub fn git_command() -> Command {
     #[cfg(not(target_os = "windows"))]
     let mut cmd = Command::new("git");
 
-    for change in english_messages_env(std::env::vars_os()) {
+    for change in english_messages_env(std::env::vars_os(), cfg!(windows)) {
         match change {
             EnvChange::Set(key, value) => cmd.env(key, value),
             EnvChange::Remove(key) => cmd.env_remove(key),
@@ -95,24 +95,40 @@ enum EnvChange {
 /// `LC_ALL` is set, since `LC_ALL` overrides every category. In that case its
 /// value moves to `LANG` and the per-category variables it was overriding are
 /// removed, which leaves every other category resolving exactly as before.
-fn english_messages_env(vars: impl Iterator<Item = (OsString, OsString)>) -> Vec<EnvChange> {
+///
+/// Windows reads variable names without regard to case, so there `lc_all` is
+/// `LC_ALL` to git and has to be found as such.
+fn english_messages_env(
+    vars: impl Iterator<Item = (OsString, OsString)>,
+    names_ignore_case: bool,
+) -> Vec<EnvChange> {
+    let is = |name: &str, expected: &str| {
+        if names_ignore_case {
+            name.eq_ignore_ascii_case(expected)
+        } else {
+            name == expected
+        }
+    };
     let mut lc_all = None;
     let mut categories = Vec::new();
     for (key, value) in vars {
-        if key == "LC_ALL" {
+        let Some(name) = key.to_str() else {
+            continue;
+        };
+        if is(name, "LC_ALL") {
             if !value.is_empty() {
-                lc_all = Some(value);
+                lc_all = Some((key, value));
             }
-        } else if key.to_str().is_some_and(|k| k.starts_with("LC_")) {
+        } else if name.get(..3).is_some_and(|prefix| is(prefix, "LC_")) {
             categories.push(key);
         }
     }
 
     let mut changes = Vec::new();
-    if let Some(lc_all) = lc_all {
-        changes.push(EnvChange::Remove("LC_ALL".into()));
+    if let Some((key, value)) = lc_all {
+        changes.push(EnvChange::Remove(key));
         changes.extend(categories.into_iter().map(EnvChange::Remove));
-        changes.push(EnvChange::Set("LANG".into(), lc_all));
+        changes.push(EnvChange::Set("LANG".into(), value));
     }
     changes.push(EnvChange::Set("LC_MESSAGES".into(), "C".into()));
     changes
@@ -1709,7 +1725,10 @@ mod english_messages_env_tests {
     #[test]
     fn without_lc_all_only_messages_change() {
         assert_eq!(
-            english_messages_env(vars(&[("LANG", "zh_CN.UTF-8"), ("LC_TIME", "de_DE")])),
+            english_messages_env(
+                vars(&[("LANG", "zh_CN.UTF-8"), ("LC_TIME", "de_DE")]),
+                false
+            ),
             vec![set("LC_MESSAGES", "C")]
         );
     }
@@ -1717,12 +1736,15 @@ mod english_messages_env_tests {
     #[test]
     fn lc_all_moves_to_lang_so_only_messages_change() {
         assert_eq!(
-            english_messages_env(vars(&[
-                ("LANG", "en_US.UTF-8"),
-                ("LC_ALL", "zh_CN.UTF-8"),
-                ("LC_TIME", "de_DE"),
-                ("PATH", "/usr/bin"),
-            ])),
+            english_messages_env(
+                vars(&[
+                    ("LANG", "en_US.UTF-8"),
+                    ("LC_ALL", "zh_CN.UTF-8"),
+                    ("LC_TIME", "de_DE"),
+                    ("PATH", "/usr/bin"),
+                ]),
+                false
+            ),
             vec![
                 remove("LC_ALL"),
                 remove("LC_TIME"),
@@ -1735,7 +1757,34 @@ mod english_messages_env_tests {
     #[test]
     fn an_empty_lc_all_counts_as_unset() {
         assert_eq!(
-            english_messages_env(vars(&[("LC_ALL", ""), ("LC_TIME", "de_DE")])),
+            english_messages_env(vars(&[("LC_ALL", ""), ("LC_TIME", "de_DE")]), false),
+            vec![set("LC_MESSAGES", "C")]
+        );
+    }
+
+    #[test]
+    fn names_match_in_any_case_where_the_platform_ignores_it() {
+        assert_eq!(
+            english_messages_env(
+                vars(&[("lc_all", "zh_CN.UTF-8"), ("Lc_Time", "de_DE")]),
+                true
+            ),
+            vec![
+                remove("lc_all"),
+                remove("Lc_Time"),
+                set("LANG", "zh_CN.UTF-8"),
+                set("LC_MESSAGES", "C"),
+            ]
+        );
+    }
+
+    #[test]
+    fn names_match_exactly_where_the_platform_is_case_sensitive() {
+        assert_eq!(
+            english_messages_env(
+                vars(&[("lc_all", "zh_CN.UTF-8"), ("Lc_Time", "de_DE")]),
+                false
+            ),
             vec![set("LC_MESSAGES", "C")]
         );
     }
