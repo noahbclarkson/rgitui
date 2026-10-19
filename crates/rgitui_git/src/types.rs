@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use rgitui_i18n::{msg, Message};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -501,21 +502,39 @@ impl RepoState {
         }
     }
 
-    /// Human-readable label for the repo state.
-    pub fn label(&self) -> &'static str {
+    /// The state as a label: "Merging", "Rebasing (interactive)".
+    pub fn label(&self) -> Message {
         match self {
-            RepoState::Clean => "Clean",
-            RepoState::Merge => "Merging",
-            RepoState::Revert => "Reverting",
-            RepoState::RevertSequence => "Reverting",
-            RepoState::CherryPick => "Cherry-picking",
-            RepoState::CherryPickSequence => "Cherry-picking",
-            RepoState::Bisect => "Bisecting",
-            RepoState::Rebase => "Rebasing",
-            RepoState::RebaseInteractive => "Rebasing (interactive)",
-            RepoState::RebaseMerge => "Rebasing",
-            RepoState::ApplyMailbox => "Applying patches",
-            RepoState::ApplyMailboxOrRebase => "Applying patches",
+            RepoState::Clean => msg!("git.state.clean"),
+            RepoState::Merge => msg!("git.state.merging"),
+            RepoState::Revert => msg!("git.state.reverting"),
+            RepoState::RevertSequence => msg!("git.state.reverting"),
+            RepoState::CherryPick => msg!("git.state.cherry_picking"),
+            RepoState::CherryPickSequence => msg!("git.state.cherry_picking"),
+            RepoState::Bisect => msg!("git.state.bisecting"),
+            RepoState::Rebase => msg!("git.state.rebasing"),
+            RepoState::RebaseInteractive => msg!("git.state.rebasing_interactive"),
+            RepoState::RebaseMerge => msg!("git.state.rebasing"),
+            RepoState::ApplyMailbox => msg!("git.state.applying_patches"),
+            RepoState::ApplyMailboxOrRebase => msg!("git.state.applying_patches"),
+        }
+    }
+
+    /// The operation in progress as a noun inside a sentence: "Aborting merge…".
+    pub fn operation(&self) -> Message {
+        match self {
+            RepoState::Clean => msg!("git.state_operation.none"),
+            RepoState::Merge => msg!("git.state_operation.merge"),
+            RepoState::Revert => msg!("git.state_operation.revert"),
+            RepoState::RevertSequence => msg!("git.state_operation.revert"),
+            RepoState::CherryPick => msg!("git.state_operation.cherry_pick"),
+            RepoState::CherryPickSequence => msg!("git.state_operation.cherry_pick"),
+            RepoState::Bisect => msg!("git.state_operation.bisect"),
+            RepoState::Rebase => msg!("git.state_operation.rebase"),
+            RepoState::RebaseInteractive => msg!("git.state_operation.rebase"),
+            RepoState::RebaseMerge => msg!("git.state_operation.rebase"),
+            RepoState::ApplyMailbox => msg!("git.state_operation.patch_application"),
+            RepoState::ApplyMailboxOrRebase => msg!("git.state_operation.patch_application"),
         }
     }
 }
@@ -591,33 +610,35 @@ impl GitOperationKind {
         *self == failed || (self.is_push() && failed.is_push())
     }
 
-    pub fn display_name(&self) -> &'static str {
+    /// The operation's name, used as a label and inside other messages
+    /// ("Checkout requires a clean working tree").
+    pub fn name(&self) -> Message {
         match self {
-            GitOperationKind::Fetch => "Fetch",
-            GitOperationKind::Pull => "Pull",
-            GitOperationKind::Push => "Push",
-            GitOperationKind::ForcePush => "Force push",
-            GitOperationKind::Checkout => "Checkout",
-            GitOperationKind::Merge => "Merge",
-            GitOperationKind::CherryPick => "Cherry-pick",
-            GitOperationKind::Revert => "Revert",
-            GitOperationKind::Reset => "Reset",
-            GitOperationKind::RemoveRemote => "Remove remote",
-            GitOperationKind::Commit => "Commit",
-            GitOperationKind::Stage => "Stage",
-            GitOperationKind::Unstage => "Unstage",
-            GitOperationKind::Stash => "Stash",
-            GitOperationKind::Branch => "Branch",
-            GitOperationKind::Tag => "Tag",
-            GitOperationKind::Discard => "Discard",
-            GitOperationKind::Rebase => "Rebase",
-            GitOperationKind::Bisect => "Bisect",
-            GitOperationKind::Worktree => "Worktree",
-            GitOperationKind::ResolveConflict => "Resolve conflict",
-            GitOperationKind::Clean => "Clean",
-            GitOperationKind::Clone => "Clone",
-            GitOperationKind::ApplyToWorktree => "Apply to working tree",
-            GitOperationKind::RevertInWorktree => "Revert in working tree",
+            GitOperationKind::Fetch => msg!("git.operation.fetch"),
+            GitOperationKind::Pull => msg!("git.operation.pull"),
+            GitOperationKind::Push => msg!("git.operation.push"),
+            GitOperationKind::ForcePush => msg!("git.operation.force_push"),
+            GitOperationKind::Checkout => msg!("git.operation.checkout"),
+            GitOperationKind::Merge => msg!("git.operation.merge"),
+            GitOperationKind::CherryPick => msg!("git.operation.cherry_pick"),
+            GitOperationKind::Revert => msg!("git.operation.revert"),
+            GitOperationKind::Reset => msg!("git.operation.reset"),
+            GitOperationKind::RemoveRemote => msg!("git.operation.remove_remote"),
+            GitOperationKind::Commit => msg!("git.operation.commit"),
+            GitOperationKind::Stage => msg!("git.operation.stage"),
+            GitOperationKind::Unstage => msg!("git.operation.unstage"),
+            GitOperationKind::Stash => msg!("git.operation.stash"),
+            GitOperationKind::Branch => msg!("git.operation.branch"),
+            GitOperationKind::Tag => msg!("git.operation.tag"),
+            GitOperationKind::Discard => msg!("git.operation.discard"),
+            GitOperationKind::Rebase => msg!("git.operation.rebase"),
+            GitOperationKind::Bisect => msg!("git.operation.bisect"),
+            GitOperationKind::Worktree => msg!("git.operation.worktree"),
+            GitOperationKind::ResolveConflict => msg!("git.operation.resolve_conflict"),
+            GitOperationKind::Clean => msg!("git.operation.clean"),
+            GitOperationKind::Clone => msg!("git.operation.clone"),
+            GitOperationKind::ApplyToWorktree => msg!("git.operation.apply_to_worktree"),
+            GitOperationKind::RevertInWorktree => msg!("git.operation.revert_in_worktree"),
         }
     }
 }
@@ -634,8 +655,10 @@ pub struct GitOperationUpdate {
     pub id: u64,
     pub kind: GitOperationKind,
     pub state: GitOperationState,
-    pub summary: String,
-    pub details: Option<String>,
+    /// What is happening or happened, translated where it is shown.
+    pub summary: Message,
+    /// The failure's cause, or output worth showing on success.
+    pub details: Option<Message>,
     pub remote_name: Option<String>,
     pub branch_name: Option<String>,
     /// The checkout the operation ran in, for the operations that record one.
@@ -873,47 +896,56 @@ mod tests {
 
     #[test]
     fn repo_state_label() {
-        assert_eq!(RepoState::Clean.label(), "Clean");
-        assert_eq!(RepoState::Merge.label(), "Merging");
-        assert_eq!(RepoState::Revert.label(), "Reverting");
-        assert_eq!(RepoState::RevertSequence.label(), "Reverting");
-        assert_eq!(RepoState::CherryPick.label(), "Cherry-picking");
-        assert_eq!(RepoState::CherryPickSequence.label(), "Cherry-picking");
-        assert_eq!(RepoState::Bisect.label(), "Bisecting");
-        assert_eq!(RepoState::Rebase.label(), "Rebasing");
+        assert_eq!(RepoState::Clean.label().english(), "Clean");
+        assert_eq!(RepoState::Merge.label().english(), "Merging");
+        assert_eq!(RepoState::Revert.label().english(), "Reverting");
+        assert_eq!(RepoState::RevertSequence.label().english(), "Reverting");
+        assert_eq!(RepoState::CherryPick.label().english(), "Cherry-picking");
         assert_eq!(
-            RepoState::RebaseInteractive.label(),
+            RepoState::CherryPickSequence.label().english(),
+            "Cherry-picking"
+        );
+        assert_eq!(RepoState::Bisect.label().english(), "Bisecting");
+        assert_eq!(RepoState::Rebase.label().english(), "Rebasing");
+        assert_eq!(
+            RepoState::RebaseInteractive.label().english(),
             "Rebasing (interactive)"
         );
-        assert_eq!(RepoState::RebaseMerge.label(), "Rebasing");
-        assert_eq!(RepoState::ApplyMailbox.label(), "Applying patches");
-        assert_eq!(RepoState::ApplyMailboxOrRebase.label(), "Applying patches");
+        assert_eq!(RepoState::RebaseMerge.label().english(), "Rebasing");
+        assert_eq!(
+            RepoState::ApplyMailbox.label().english(),
+            "Applying patches"
+        );
+        assert_eq!(
+            RepoState::ApplyMailboxOrRebase.label().english(),
+            "Applying patches"
+        );
     }
 
     #[test]
-    fn git_operation_kind_display_name() {
-        assert_eq!(GitOperationKind::Fetch.display_name(), "Fetch");
-        assert_eq!(GitOperationKind::Pull.display_name(), "Pull");
-        assert_eq!(GitOperationKind::Push.display_name(), "Push");
-        assert_eq!(GitOperationKind::ForcePush.display_name(), "Force push");
-        assert_eq!(GitOperationKind::Checkout.display_name(), "Checkout");
-        assert_eq!(GitOperationKind::Merge.display_name(), "Merge");
-        assert_eq!(GitOperationKind::CherryPick.display_name(), "Cherry-pick");
-        assert_eq!(GitOperationKind::Revert.display_name(), "Revert");
-        assert_eq!(GitOperationKind::Reset.display_name(), "Reset");
+    fn git_operation_kind_name() {
+        assert_eq!(GitOperationKind::Fetch.name().english(), "Fetch");
+        assert_eq!(GitOperationKind::Pull.name().english(), "Pull");
+        assert_eq!(GitOperationKind::Push.name().english(), "Push");
+        assert_eq!(GitOperationKind::ForcePush.name().english(), "Force push");
+        assert_eq!(GitOperationKind::Checkout.name().english(), "Checkout");
+        assert_eq!(GitOperationKind::Merge.name().english(), "Merge");
+        assert_eq!(GitOperationKind::CherryPick.name().english(), "Cherry-pick");
+        assert_eq!(GitOperationKind::Revert.name().english(), "Revert");
+        assert_eq!(GitOperationKind::Reset.name().english(), "Reset");
         assert_eq!(
-            GitOperationKind::RemoveRemote.display_name(),
+            GitOperationKind::RemoveRemote.name().english(),
             "Remove remote"
         );
-        assert_eq!(GitOperationKind::Commit.display_name(), "Commit");
-        assert_eq!(GitOperationKind::Stage.display_name(), "Stage");
-        assert_eq!(GitOperationKind::Unstage.display_name(), "Unstage");
-        assert_eq!(GitOperationKind::Stash.display_name(), "Stash");
-        assert_eq!(GitOperationKind::Branch.display_name(), "Branch");
-        assert_eq!(GitOperationKind::Tag.display_name(), "Tag");
-        assert_eq!(GitOperationKind::Discard.display_name(), "Discard");
-        assert_eq!(GitOperationKind::Rebase.display_name(), "Rebase");
-        assert_eq!(GitOperationKind::Bisect.display_name(), "Bisect");
+        assert_eq!(GitOperationKind::Commit.name().english(), "Commit");
+        assert_eq!(GitOperationKind::Stage.name().english(), "Stage");
+        assert_eq!(GitOperationKind::Unstage.name().english(), "Unstage");
+        assert_eq!(GitOperationKind::Stash.name().english(), "Stash");
+        assert_eq!(GitOperationKind::Branch.name().english(), "Branch");
+        assert_eq!(GitOperationKind::Tag.name().english(), "Tag");
+        assert_eq!(GitOperationKind::Discard.name().english(), "Discard");
+        assert_eq!(GitOperationKind::Rebase.name().english(), "Rebase");
+        assert_eq!(GitOperationKind::Bisect.name().english(), "Bisect");
     }
 
     #[test]

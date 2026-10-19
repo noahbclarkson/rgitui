@@ -553,8 +553,9 @@ impl Workspace {
                     .collect();
 
                 if entries.is_empty() {
-                    self.status_message =
-                        Some("No commits available for interactive rebase.".into());
+                    self.status_message = Some(rgitui_i18n::Message::verbatim(
+                        "No commits available for interactive rebase.",
+                    ));
                     self.show_toast(
                         "No commits available for interactive rebase.",
                         ToastKind::Info,

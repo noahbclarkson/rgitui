@@ -1,6 +1,8 @@
+use super::messages::{error, error_message};
 use anyhow::{Context as _, Result};
 use git2::Repository;
 use gpui::{AsyncApp, Context, Task, WeakEntity};
+use rgitui_i18n::{msg, msgp, Message};
 use std::io::{Read as _, Seek as _, Write as _};
 use std::path::{Path, PathBuf};
 
@@ -29,7 +31,7 @@ use super::{ensure_clean_worktree, head_branch_name, GitProject, GitProjectEvent
 fn finish_merge_commit(repo: &Repository) -> Result<String> {
     let merge_head_path = repo.path().join("MERGE_HEAD");
     if !merge_head_path.exists() {
-        anyhow::bail!("Repository is not in a merge state (no MERGE_HEAD to continue).");
+        return Err(error(msg!("git.error.not_merging")));
     }
 
     let mut index = repo.index()?;
@@ -102,14 +104,19 @@ fn run_continue_subcommand(worktree_path: &Path, subcommand: &str) -> Result<Str
 }
 
 /// Renders up to three paths inline, summarising the rest, for error messages.
-fn format_path_list(paths: &[String]) -> String {
+fn format_path_list(paths: &[String]) -> Message {
     const SHOWN: usize = 3;
     let shown = paths.len().min(SHOWN);
-    let mut list = paths[..shown].join(", ");
+    let list = paths[..shown].join(", ");
     if paths.len() > shown {
-        list.push_str(&format!(" and {} more", paths.len() - shown));
+        msgp!(
+            "git.error.path_list_and_more",
+            paths.len() - shown,
+            paths = &list
+        )
+    } else {
+        Message::verbatim(list)
     }
-    list
 }
 
 /// Checks out `target` without overwriting local work, naming the files that
@@ -119,7 +126,11 @@ fn format_path_list(paths: &[String]) -> String {
 /// checkout", which tells the user nothing they can act on. The notify callback
 /// collects the offending paths so the error can name them, matching what the
 /// `git` CLI does on the same refusal.
-fn checkout_tree_safe(repo: &Repository, target: &git2::Object<'_>, operation: &str) -> Result<()> {
+fn checkout_tree_safe(
+    repo: &Repository,
+    target: &git2::Object<'_>,
+    operation: GitOperationKind,
+) -> Result<()> {
     let conflicts = std::cell::RefCell::new(Vec::new());
     let result = {
         let mut opts = git2::build::CheckoutBuilder::new();
@@ -139,17 +150,17 @@ fn checkout_tree_safe(repo: &Repository, target: &git2::Object<'_>, operation: &
         Err(err) if err.code() == git2::ErrorCode::Conflict => {
             let paths = conflicts.into_inner();
             if paths.is_empty() {
-                anyhow::bail!(
-                    "{} would overwrite local changes. Commit, stash, or discard them first.",
-                    operation
-                );
+                return Err(error(msg!(
+                    "git.error.overwrite_local",
+                    operation = operation.name()
+                )));
             }
-            anyhow::bail!(
-                "{} would overwrite {}. Commit, stash, move, or delete {} first.",
-                operation,
-                format_path_list(&paths),
-                if paths.len() == 1 { "it" } else { "them" }
-            );
+            Err(error(msgp!(
+                "git.error.overwrite_paths",
+                paths.len(),
+                operation = operation.name(),
+                paths = format_path_list(&paths)
+            )))
         }
         Err(err) => Err(err.into()),
     }
@@ -175,9 +186,9 @@ impl GitProject {
         let operation_id = self.begin_operation(
             GitOperationKind::Stage,
             if paths.len() == 1 {
-                format!("Staging {}...", paths[0].display())
+                msg!("git.stage.running_file", path = paths[0].display())
             } else {
-                format!("Staging {} files...", paths.len())
+                msgp!("git.stage.running_files", paths.len())
             },
             None,
             branch_name.clone(),
@@ -191,10 +202,10 @@ impl GitProject {
                     let mut index = repo.index()?;
                     for path in &task_paths {
                         if index.conflict_get(path).is_ok() {
-                            anyhow::bail!(
-                                "'{}' has unresolved conflicts. Open the conflict resolver before staging it.",
-                                path.display()
-                            );
+                            return Err(error(msg!(
+                                "git.error.staging_conflict",
+                                path = path.display()
+                            )));
                         }
                         if worktree_path.join(path).exists() {
                             index.add_path(path)?;
@@ -222,9 +233,9 @@ impl GitProject {
                                 operation_id,
                                 GitOperationKind::Stage,
                                 if paths.len() == 1 {
-                                    format!("Staged {}", paths[0].display())
+                                    msg!("git.stage.done_file", path = paths[0].display())
                                 } else {
-                                    format!("Staged {} files", paths.len())
+                                    msgp!("git.stage.done_files", paths.len())
                                 },
                                 (None, None, branch_name.clone()),
                                 cx,
@@ -235,8 +246,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stage,
-                                "Stage failed",
-                                e.to_string(),
+                                msg!("git.stage.failed"),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -268,9 +279,9 @@ impl GitProject {
         let operation_id = self.begin_operation(
             GitOperationKind::Unstage,
             if paths.len() == 1 {
-                format!("Unstaging {}...", paths[0].display())
+                msg!("git.unstage.running_file", path = paths[0].display())
             } else {
-                format!("Unstaging {} files...", paths.len())
+                msgp!("git.unstage.running_files", paths.len())
             },
             None,
             branch_name.clone(),
@@ -315,9 +326,9 @@ impl GitProject {
                                 operation_id,
                                 GitOperationKind::Unstage,
                                 if paths.len() == 1 {
-                                    format!("Unstaged {}", paths[0].display())
+                                    msg!("git.unstage.done_file", path = paths[0].display())
                                 } else {
-                                    format!("Unstaged {} files", paths.len())
+                                    msgp!("git.unstage.done_files", paths.len())
                                 },
                                 (None, None, branch_name.clone()),
                                 cx,
@@ -328,8 +339,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
-                                "Unstage failed",
-                                e.to_string(),
+                                msg!("git.unstage.failed"),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -357,7 +368,7 @@ impl GitProject {
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Stage,
-            "Staging all changes...",
+            msg!("git.stage_all.running"),
             None,
             branch_name.clone(),
             cx,
@@ -407,7 +418,7 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stage,
-                                "Staged all changes",
+                                msg!("git.stage_all.done"),
                                 (None, None, branch_name.clone()),
                                 cx,
                             );
@@ -417,8 +428,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stage,
-                                "Stage all failed",
-                                e.to_string(),
+                                msg!("git.stage_all.failed"),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -446,7 +457,7 @@ impl GitProject {
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Unstage,
-            "Unstaging all changes...",
+            msg!("git.unstage_all.running"),
             None,
             branch_name.clone(),
             cx,
@@ -478,7 +489,7 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
-                                "Unstaged all changes",
+                                msg!("git.unstage_all.done"),
                                 (None, None, branch_name.clone()),
                                 cx,
                             );
@@ -488,8 +499,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
-                                "Unstage all failed",
-                                e.to_string(),
+                                msg!("git.unstage_all.failed"),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -522,9 +533,9 @@ impl GitProject {
         let operation_id = self.begin_operation(
             GitOperationKind::Commit,
             if amend {
-                "Amending commit..."
+                msg!("git.amend.running")
             } else {
-                "Creating commit..."
+                msg!("git.commit.running")
             },
             None,
             branch_name.clone(),
@@ -538,7 +549,7 @@ impl GitProject {
                     let sig = repo.signature()?;
                     let mut index = repo.index()?;
                     if index.is_empty() {
-                        anyhow::bail!("There are no staged changes to commit.")
+                        return Err(error(msg!("git.error.no_staged_changes")));
                     }
                     let tree_oid = index.write_tree()?;
                     let tree = repo.find_tree(tree_oid)?;
@@ -556,9 +567,7 @@ impl GitProject {
                                 | git2::RepositoryState::RebaseMerge
                         )
                     {
-                        anyhow::bail!(
-                            "Cannot amend during a rebase. Continue or abort the rebase first."
-                        );
+                        return Err(error(msg!("git.error.amend_during_rebase")));
                     }
 
                     // A plain commit made while a merge is in progress must finalize
@@ -695,11 +704,15 @@ impl GitProject {
                             operation_id,
                             GitOperationKind::Commit,
                             if amend {
-                                format!("Amended commit {}", &oid.to_string()[..7])
+                                msg!("git.amend.done", commit = &oid.to_string()[..7])
                             } else {
-                                format!("Created commit {}", &oid.to_string()[..7])
+                                msg!("git.commit.done", commit = &oid.to_string()[..7])
                             },
-                            (Some(commit_summary.clone()), None, branch_name.clone()),
+                            (
+                                Some(Message::verbatim(commit_summary.clone())),
+                                None,
+                                branch_name.clone(),
+                            ),
                             cx,
                         );
                         cx.emit(GitProjectEvent::RepositoryChanged);
@@ -711,11 +724,11 @@ impl GitProject {
                             operation_id,
                             GitOperationKind::Commit,
                             if amend {
-                                "Amend failed"
+                                msg!("git.amend.failed")
                             } else {
-                                "Commit failed"
+                                msg!("git.commit.failed")
                             },
-                            e.to_string(),
+                            error_message(&e),
                             (None, branch_name.clone(), false),
                             cx,
                         );
@@ -737,17 +750,17 @@ impl GitProject {
         let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
             GitOperationKind::Checkout,
-            format!("Switching to '{}'...", name),
+            msg!("git.checkout_branch.running", branch = &name),
             None,
             Some(name.clone()),
             cx,
         );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let result: anyhow::Result<(String, RefreshData)> = cx
+            let result: anyhow::Result<(Message, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
                     let repo = Repository::open(&repo_path)?;
-                    ensure_clean_worktree(&repo, "Checkout")?;
+                    ensure_clean_worktree(&repo, GitOperationKind::Checkout.name())?;
                     let current_branch = head_branch_name(&repo).ok();
 
                     // Determine whether this is a local or remote branch, and the
@@ -761,11 +774,10 @@ impl GitProject {
                                 let remote_ref = format!("refs/remotes/{}", task_name);
                                 if let Ok(remote_obj) = repo.revparse_single(&remote_ref) {
                                     let Some((_remote, short)) = task_name.split_once('/') else {
-                                        anyhow::bail!(
-                                            "Invalid remote branch name '{}'. \
-                                            Expected 'remote/branch' format.",
-                                            task_name
-                                        );
+                                        return Err(error(msg!(
+                                            "git.error.invalid_remote_branch",
+                                            branch = &task_name
+                                        )));
                                     };
                                     let local_branch_name = short;
 
@@ -774,11 +786,10 @@ impl GitProject {
                                         .find_branch(local_branch_name, git2::BranchType::Local)
                                         .is_ok()
                                     {
-                                        anyhow::bail!(
-                                            "A local branch named '{}' already exists. \
-                                            Please delete or rename it first.",
-                                            local_branch_name
-                                        );
+                                        return Err(error(msg!(
+                                            "git.error.local_branch_exists",
+                                            branch = &local_branch_name
+                                        )));
                                     }
 
                                     // Create the local tracking branch at the remote's commit.
@@ -794,18 +805,20 @@ impl GitProject {
 
                                     (remote_obj, local_branch_name.to_string(), true)
                                 } else {
-                                    anyhow::bail!(
-                                        "Branch '{}' not found as a local or remote branch. \
-                                        Try fetching to update remote refs.",
-                                        task_name
-                                    );
+                                    return Err(error(msg!(
+                                        "git.error.branch_not_found",
+                                        branch = &task_name
+                                    )));
                                 }
                             }
                         };
 
                     // Bail if already on the target branch (use local name for tracking).
                     if current_branch.as_deref() == Some(local_branch_name.as_str()) {
-                        anyhow::bail!("Already on branch '{}'.", local_branch_name);
+                        return Err(error(msg!(
+                            "git.error.already_on_branch",
+                            branch = &local_branch_name
+                        )));
                     }
 
                     let head_ref = if is_tracking {
@@ -814,16 +827,17 @@ impl GitProject {
                         format!("refs/heads/{}", task_name)
                     };
 
-                    checkout_tree_safe(&repo, &obj, "Checkout")?;
+                    checkout_tree_safe(&repo, &obj, GitOperationKind::Checkout)?;
                     repo.set_head(&head_ref)?;
                     let data = gather_refresh_data(&repo_path, commit_limit)?;
                     let msg = if is_tracking {
-                        format!(
-                            "Switched to new branch '{}' tracking '{}'",
-                            local_branch_name, task_name
+                        msg!(
+                            "git.checkout_branch.done_tracking",
+                            branch = &local_branch_name,
+                            upstream = &task_name
                         )
                     } else {
-                        format!("Switched to '{}'", task_name)
+                        msg!("git.checkout_branch.done", branch = &task_name)
                     };
                     Ok((msg, data))
                 })
@@ -839,7 +853,7 @@ impl GitProject {
                                 GitOperationKind::Checkout,
                                 msg,
                                 (
-                                    Some("Working tree updated for the selected branch.".into()),
+                                    Some(msg!("git.checkout_branch.detail")),
                                     None,
                                     Some(name.clone()),
                                 ),
@@ -852,8 +866,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Checkout,
-                                format!("Checkout of '{}' failed", name),
-                                e.to_string(),
+                                msg!("git.checkout_branch.failed", branch = &name),
+                                error_message(&e),
                                 (None, Some(name.clone()), true),
                                 cx,
                             );
@@ -873,7 +887,7 @@ impl GitProject {
         let short_id = oid.to_string()[..7].to_string();
         let operation_id = self.begin_operation(
             GitOperationKind::Checkout,
-            format!("Checking out {}...", short_id),
+            msg!("git.checkout_commit.running", commit = &short_id),
             None,
             Some(short_id.clone()),
             cx,
@@ -883,10 +897,10 @@ impl GitProject {
                 .background_executor()
                 .spawn(async move {
                     let repo = Repository::open(&repo_path)?;
-                    ensure_clean_worktree(&repo, "Checkout")?;
+                    ensure_clean_worktree(&repo, GitOperationKind::Checkout.name())?;
                     let commit = repo.find_commit(oid)?;
                     let obj = commit.into_object();
-                    checkout_tree_safe(&repo, &obj, "Checkout")?;
+                    checkout_tree_safe(&repo, &obj, GitOperationKind::Checkout)?;
                     repo.set_head_detached(oid)?;
                     gather_refresh_data(&repo_path, commit_limit)
                 })
@@ -900,9 +914,9 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Checkout,
-                                format!("Checked out {}", short_id),
+                                msg!("git.checkout_commit.done", commit = &short_id),
                                 (
-                                    Some("HEAD is now detached at the selected commit.".into()),
+                                    Some(msg!("git.checkout_commit.detail")),
                                     None,
                                     Some(short_id.clone()),
                                 ),
@@ -915,8 +929,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Checkout,
-                                format!("Checkout of {} failed", short_id),
-                                e.to_string(),
+                                msg!("git.checkout_commit.failed", commit = &short_id),
+                                error_message(&e),
                                 (None, Some(short_id.clone()), true),
                                 cx,
                             );
@@ -937,7 +951,7 @@ impl GitProject {
         let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
             GitOperationKind::Checkout,
-            format!("Checking out tag '{}'...", name),
+            msg!("git.checkout_tag.running", tag = &name),
             None,
             Some(name.clone()),
             cx,
@@ -947,12 +961,12 @@ impl GitProject {
                 .background_executor()
                 .spawn(async move {
                     let repo = Repository::open(&repo_path)?;
-                    ensure_clean_worktree(&repo, "Checkout")?;
+                    ensure_clean_worktree(&repo, GitOperationKind::Checkout.name())?;
                     let obj = repo.revparse_single(&format!("refs/tags/{}", task_name))?;
                     let commit = obj.peel_to_commit()?;
                     let oid = commit.id();
                     let obj = commit.into_object();
-                    checkout_tree_safe(&repo, &obj, "Checkout")?;
+                    checkout_tree_safe(&repo, &obj, GitOperationKind::Checkout)?;
                     repo.set_head_detached(oid)?;
                     gather_refresh_data(&repo_path, commit_limit)
                 })
@@ -966,9 +980,9 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Checkout,
-                                format!("Checked out tag '{}'", name),
+                                msg!("git.checkout_tag.done", tag = &name),
                                 (
-                                    Some("HEAD is now detached at the selected tag.".into()),
+                                    Some(msg!("git.checkout_tag.detail")),
                                     None,
                                     Some(name.clone()),
                                 ),
@@ -981,8 +995,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Checkout,
-                                format!("Checkout of tag '{}' failed", name),
-                                e.to_string(),
+                                msg!("git.checkout_tag.failed", tag = &name),
+                                error_message(&e),
                                 (None, Some(name.clone()), true),
                                 cx,
                             );
@@ -1012,7 +1026,7 @@ impl GitProject {
         let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
             GitOperationKind::Branch,
-            format!("Creating branch '{}'...", name),
+            msg!("git.create_branch.running", branch = &name),
             None,
             Some(name.clone()),
             cx,
@@ -1027,9 +1041,8 @@ impl GitProject {
                             repo.head()?.peel_to_commit()?
                         } else {
                             let obj = repo.revparse_single(r)?;
-                            obj.peel_to_commit().map_err(|_| {
-                                anyhow::anyhow!("'{}' does not resolve to a commit", r)
-                            })?
+                            obj.peel_to_commit()
+                                .map_err(|_| error(msg!("git.error.not_a_commit", revision = &r)))?
                         }
                     } else {
                         repo.head()?.peel_to_commit()?
@@ -1047,9 +1060,11 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Branch,
-                                format!("Created branch '{}'", name),
+                                msg!("git.create_branch.done", branch = &name),
                                 (
-                                    base_ref.as_ref().map(|value| format!("Base: {}", value)),
+                                    base_ref.as_ref().map(|value| {
+                                        msg!("git.create_branch.detail", base = &value)
+                                    }),
                                     None,
                                     Some(name.clone()),
                                 ),
@@ -1061,8 +1076,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Branch,
-                                format!("Branch '{}' could not be created", name),
-                                e.to_string(),
+                                msg!("git.create_branch.failed", branch = &name),
+                                error_message(&e),
                                 (None, Some(name.clone()), false),
                                 cx,
                             );
@@ -1084,7 +1099,7 @@ impl GitProject {
         let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
             GitOperationKind::Branch,
-            format!("Deleting branch '{}'...", name),
+            msg!("git.delete_branch.running", branch = &name),
             None,
             Some(name.clone()),
             cx,
@@ -1108,7 +1123,7 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Branch,
-                                format!("Deleted branch '{}'", name),
+                                msg!("git.delete_branch.done", branch = &name),
                                 (None, None, Some(name.clone())),
                                 cx,
                             );
@@ -1118,8 +1133,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Branch,
-                                format!("Delete branch '{}' failed", name),
-                                e.to_string(),
+                                msg!("git.delete_branch.failed", branch = &name),
+                                error_message(&e),
                                 (None, Some(name.clone()), false),
                                 cx,
                             );
@@ -1148,7 +1163,7 @@ impl GitProject {
         let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
             GitOperationKind::Branch,
-            format!("Renaming branch '{}'...", old_name),
+            msg!("git.rename_branch.running", branch = &old_name),
             None,
             Some(old_name.clone()),
             cx,
@@ -1172,7 +1187,11 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Branch,
-                                format!("Renamed '{}' to '{}'", old_name, new_name),
+                                msg!(
+                                    "git.rename_branch.done",
+                                    branch = &old_name,
+                                    new_name = &new_name
+                                ),
                                 (None, None, Some(new_name.clone())),
                                 cx,
                             );
@@ -1182,8 +1201,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Branch,
-                                format!("Rename branch '{}' failed", old_name),
-                                e.to_string(),
+                                msg!("git.rename_branch.failed", branch = &old_name),
+                                error_message(&e),
                                 (None, Some(old_name.clone()), false),
                                 cx,
                             );
@@ -1210,7 +1229,7 @@ impl GitProject {
         let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
             GitOperationKind::Tag,
-            format!("Creating tag '{}'...", name),
+            msg!("git.create_tag.running", tag = &name),
             None,
             self.head_branch.clone(),
             cx,
@@ -1234,7 +1253,7 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Tag,
-                                format!("Created tag '{}'", name),
+                                msg!("git.create_tag.done", tag = &name),
                                 (None, None, this.head_branch.clone()),
                                 cx,
                             );
@@ -1244,8 +1263,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Tag,
-                                format!("Tag '{}' could not be created", name),
-                                e.to_string(),
+                                msg!("git.create_tag.failed", tag = &name),
+                                error_message(&e),
                                 (None, this.head_branch.clone(), false),
                                 cx,
                             );
@@ -1267,7 +1286,7 @@ impl GitProject {
         let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
             GitOperationKind::Tag,
-            format!("Deleting tag '{}'...", name),
+            msg!("git.delete_tag.running", tag = &name),
             None,
             self.head_branch.clone(),
             cx,
@@ -1290,7 +1309,7 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Tag,
-                                format!("Deleted tag '{}'", name),
+                                msg!("git.delete_tag.done", tag = &name),
                                 (None, None, this.head_branch.clone()),
                                 cx,
                             );
@@ -1300,8 +1319,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Tag,
-                                format!("Delete tag '{}' failed", name),
-                                e.to_string(),
+                                msg!("git.delete_tag.failed", tag = &name),
+                                error_message(&e),
                                 (None, this.head_branch.clone(), false),
                                 cx,
                             );
@@ -1330,7 +1349,7 @@ impl GitProject {
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Stash,
-            "Saving stash...",
+            msg!("git.stash_save.running"),
             None,
             branch_name.clone(),
             cx,
@@ -1354,7 +1373,7 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stash,
-                                "Saved stash",
+                                msg!("git.stash_save.done"),
                                 (None, None, branch_name.clone()),
                                 cx,
                             );
@@ -1364,8 +1383,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stash,
-                                "Save stash failed",
-                                e.to_string(),
+                                msg!("git.stash_save.failed"),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -1396,13 +1415,13 @@ impl GitProject {
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Stash,
-            format!("Popping stash #{}...", index),
+            msg!("git.stash_pop.running", index = &index),
             None,
             branch_name.clone(),
             cx,
         );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let result: anyhow::Result<(RefreshData, String)> = cx
+            let result: anyhow::Result<(RefreshData, Message)> = cx
                 .background_executor()
                 .spawn(async move {
                     let mut repo = Repository::open(&worktree_path)?;
@@ -1410,13 +1429,10 @@ impl GitProject {
                     // entries rather than truly failing; surface that (and still
                     // refresh) instead of a hard failure that hides the new state.
                     let message = match repo.stash_pop(index, None) {
-                        Ok(()) => format!("Popped stash #{}", index),
+                        Ok(()) => msg!("git.stash_pop.done", index = index),
                         Err(e) => {
                             if repo.index().map(|i| i.has_conflicts()).unwrap_or(false) {
-                                format!(
-                                    "CONFLICT: stash #{} applied with conflicts; resolve them, then drop the stash.",
-                                    index
-                                )
+                                msg!("git.stash_pop.conflict", index = index)
                             } else {
                                 return Err(e.into());
                             }
@@ -1445,8 +1461,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stash,
-                                format!("Pop stash #{} failed", index),
-                                e.to_string(),
+                                msg!("git.stash_pop.failed", index = &index),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -1477,13 +1493,13 @@ impl GitProject {
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Stash,
-            format!("Applying stash #{}...", index),
+            msg!("git.stash_apply.running", index = &index),
             None,
             branch_name.clone(),
             cx,
         );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let result: anyhow::Result<(RefreshData, String)> = cx
+            let result: anyhow::Result<(RefreshData, Message)> = cx
                 .background_executor()
                 .spawn(async move {
                     let mut repo = Repository::open(&worktree_path)?;
@@ -1491,13 +1507,10 @@ impl GitProject {
                     // entries rather than truly failing; surface that (and still
                     // refresh) instead of a hard failure that hides the new state.
                     let message = match repo.stash_apply(index, None) {
-                        Ok(()) => format!("Applied stash #{}", index),
+                        Ok(()) => msg!("git.stash_apply.done", index = index),
                         Err(e) => {
                             if repo.index().map(|i| i.has_conflicts()).unwrap_or(false) {
-                                format!(
-                                    "CONFLICT: stash #{} applied with conflicts; resolve them before continuing.",
-                                    index
-                                )
+                                msg!("git.stash_apply.conflict", index = index)
                             } else {
                                 return Err(e.into());
                             }
@@ -1518,7 +1531,7 @@ impl GitProject {
                                 GitOperationKind::Stash,
                                 message,
                                 (
-                                    Some("The stash entry was kept.".into()),
+                                    Some(msg!("git.stash_apply.detail")),
                                     None,
                                     branch_name.clone(),
                                 ),
@@ -1530,8 +1543,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stash,
-                                format!("Apply stash #{} failed", index),
-                                e.to_string(),
+                                msg!("git.stash_apply.failed", index = &index),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -1552,7 +1565,7 @@ impl GitProject {
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Stash,
-            format!("Dropping stash #{}...", index),
+            msg!("git.stash_drop.running", index = &index),
             None,
             branch_name.clone(),
             cx,
@@ -1575,7 +1588,7 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stash,
-                                format!("Dropped stash #{}", index),
+                                msg!("git.stash_drop.done", index = &index),
                                 (None, None, branch_name.clone()),
                                 cx,
                             );
@@ -1585,8 +1598,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stash,
-                                format!("Drop stash #{} failed", index),
-                                e.to_string(),
+                                msg!("git.stash_drop.failed", index = &index),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -1625,9 +1638,10 @@ impl GitProject {
         let current_branch = self.head_branch_at(&worktree_path);
         let operation_id = self.begin_operation(
             GitOperationKind::Stash,
-            format!(
-                "Creating branch '{}' from stash #{}...",
-                branch_name_owned, stash_index
+            msg!(
+                "git.stash_branch.running",
+                branch = &branch_name_owned,
+                index = &stash_index
             ),
             None,
             current_branch.clone(),
@@ -1649,7 +1663,10 @@ impl GitProject {
                     })?;
 
                     let stash_oid = *stash_oids.get(stash_index).ok_or_else(|| {
-                        anyhow::anyhow!("Stash index {} out of range", stash_index)
+                        error(msg!(
+                            "git.error.stash_index_out_of_range",
+                            index = &stash_index
+                        ))
                     })?;
 
                     // `git stash branch`: create the branch at the commit HEAD was
@@ -1686,9 +1703,10 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stash,
-                                format!(
-                                    "Created branch '{}' from stash #{}",
-                                    branch_name_for_update, stash_index
+                                msg!(
+                                    "git.stash_branch.done",
+                                    branch = &branch_name_for_update,
+                                    index = &stash_index
                                 ),
                                 (None, None, Some(branch_name_for_update.clone())),
                                 cx,
@@ -1699,8 +1717,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stash,
-                                format!("Create branch from stash #{} failed", stash_index),
-                                e.to_string(),
+                                msg!("git.stash_branch.failed", index = &stash_index),
+                                error_message(&e),
                                 (None, current_branch, false),
                                 cx,
                             );
@@ -1725,9 +1743,9 @@ impl GitProject {
         let operation_id = self.begin_operation(
             GitOperationKind::Discard,
             if paths.len() == 1 {
-                format!("Discarding changes in {}...", paths[0].display())
+                msg!("git.discard.running_file", path = paths[0].display())
             } else {
-                format!("Discarding changes in {} files...", paths.len())
+                msgp!("git.discard.running_files", paths.len())
             },
             None,
             self.head_branch.clone(),
@@ -1792,7 +1810,7 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Discard,
-                                "Discarded changes",
+                                msg!("git.discard.done"),
                                 (None, None, this.head_branch.clone()),
                                 cx,
                             );
@@ -1803,8 +1821,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Discard,
-                                "Discard changes failed",
-                                e.to_string(),
+                                msg!("git.discard.failed"),
+                                error_message(&e),
                                 (None, this.head_branch.clone(), false),
                                 cx,
                             );
@@ -1829,7 +1847,7 @@ impl GitProject {
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Clean,
-            "Cleaning untracked files...",
+            msg!("git.clean.running"),
             None,
             branch_name.clone(),
             cx,
@@ -1883,18 +1901,11 @@ impl GitProject {
                         Ok((removed, data)) => {
                             this.apply_refresh_data(data);
                             let (title, detail) = if removed == 0 {
-                                (
-                                    "Nothing to clean".to_string(),
-                                    "There were no untracked files to remove.".to_string(),
-                                )
+                                (msg!("git.clean.nothing"), msg!("git.clean.nothing_detail"))
                             } else {
                                 (
-                                    "Cleaned untracked files".to_string(),
-                                    format!(
-                                        "Removed {} untracked {}.",
-                                        removed,
-                                        if removed == 1 { "entry" } else { "entries" }
-                                    ),
+                                    msg!("git.clean.done"),
+                                    msgp!("git.clean.done_detail", removed),
                                 )
                             };
                             this.complete_op(
@@ -1911,8 +1922,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Clean,
-                                "Clean failed",
-                                e.to_string(),
+                                msg!("git.clean.failed"),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -1937,7 +1948,7 @@ impl GitProject {
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Reset,
-            "Resetting working tree to HEAD...",
+            msg!("git.reset_head.running"),
             None,
             branch_name.clone(),
             cx,
@@ -1961,9 +1972,9 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Reset,
-                                "Reset working tree to HEAD",
+                                msg!("git.reset_head.done"),
                                 (
-                                    Some("All staged and unstaged changes were discarded.".into()),
+                                    Some(msg!("git.reset_head.detail")),
                                     None,
                                     branch_name.clone(),
                                 ),
@@ -1976,8 +1987,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Reset,
-                                "Reset to HEAD failed",
-                                e.to_string(),
+                                msg!("git.reset_head.failed"),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -2008,7 +2019,7 @@ impl GitProject {
         let short_id = oid.to_string()[..7].to_string();
         let operation_id = self.begin_operation(
             GitOperationKind::Reset,
-            format!("Resetting to {}...", short_id),
+            msg!("git.reset_hard.running", commit = &short_id),
             None,
             branch_name.clone(),
             cx,
@@ -2032,9 +2043,9 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Reset,
-                                format!("Reset to {}", short_id),
+                                msg!("git.reset_hard.done", commit = &short_id),
                                 (
-                                    Some("Working tree reset to the selected commit.".into()),
+                                    Some(msg!("git.reset_hard.detail")),
                                     None,
                                     branch_name.clone(),
                                 ),
@@ -2047,8 +2058,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Reset,
-                                format!("Reset to {} failed", short_id),
-                                e.to_string(),
+                                msg!("git.reset_hard.failed", commit = &short_id),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -2077,7 +2088,7 @@ impl GitProject {
         let short_id = oid.to_string()[..7].to_string();
         let operation_id = self.begin_operation(
             GitOperationKind::Reset,
-            format!("Soft-resetting to {}...", short_id),
+            msg!("git.reset_soft.running", commit = &short_id),
             None,
             branch_name.clone(),
             cx,
@@ -2101,9 +2112,9 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Reset,
-                                format!("Soft reset to {}", short_id),
+                                msg!("git.reset_soft.done", commit = &short_id),
                                 (
-                                    Some("Changes preserved in index.".into()),
+                                    Some(msg!("git.reset_soft.detail")),
                                     None,
                                     branch_name.clone(),
                                 ),
@@ -2116,8 +2127,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Reset,
-                                format!("Soft reset to {} failed", short_id),
-                                e.to_string(),
+                                msg!("git.reset_soft.failed", commit = &short_id),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -2148,7 +2159,7 @@ impl GitProject {
         let short_id = oid.to_string()[..7].to_string();
         let operation_id = self.begin_operation(
             GitOperationKind::Reset,
-            format!("Mixed-resetting to {}...", short_id),
+            msg!("git.reset_mixed.running", commit = &short_id),
             None,
             branch_name.clone(),
             cx,
@@ -2172,9 +2183,9 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Reset,
-                                format!("Mixed reset to {}", short_id),
+                                msg!("git.reset_mixed.done", commit = &short_id),
                                 (
-                                    Some("Changes unstaged; index and working tree reset.".into()),
+                                    Some(msg!("git.reset_mixed.detail")),
                                     None,
                                     branch_name.clone(),
                                 ),
@@ -2187,8 +2198,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Reset,
-                                format!("Mixed reset to {} failed", short_id),
-                                e.to_string(),
+                                msg!("git.reset_mixed.failed", commit = &short_id),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -2219,7 +2230,7 @@ impl GitProject {
         let short_id = oid.to_string()[..7].to_string();
         let operation_id = self.begin_operation(
             GitOperationKind::Revert,
-            format!("Reverting {}...", short_id),
+            msg!("git.revert.running", commit = &short_id),
             None,
             branch_name.clone(),
             cx,
@@ -2229,7 +2240,7 @@ impl GitProject {
                 .background_executor()
                 .spawn(async move {
                     let repo = Repository::open(&worktree_path)?;
-                    ensure_clean_worktree(&repo, "Revert")?;
+                    ensure_clean_worktree(&repo, GitOperationKind::Revert.name())?;
                     let commit = repo.find_commit(oid)?;
                     let summary = commit.summary().unwrap_or("").to_string();
                     let mut opts = git2::RevertOptions::new();
@@ -2253,8 +2264,8 @@ impl GitProject {
                                 this.fail_op(
                                     operation_id,
                                     GitOperationKind::Revert,
-                                    format!("Revert of {} needs conflict resolution", short_id),
-                                    "Resolve the conflicts in the working tree, then commit the revert manually.".to_string(),
+                                    msg!("git.revert.conflict", commit = &short_id),
+                                    msg!("git.revert.resolve_guide"),
                                     (None, branch_name.clone(), false),
                                     cx,
                                 );
@@ -2262,11 +2273,12 @@ impl GitProject {
                                 this.complete_op(
                                     operation_id,
                                     GitOperationKind::Revert,
-                                    format!("Reverted {}", short_id),
-                                    (Some(format!(
-                                        "Revert for '{}' has been applied. Review the changes and commit them manually.",
-                                        summary
-                                    )), None, branch_name.clone()),
+                                    msg!("git.revert.done", commit = &short_id),
+                                    (
+                                        Some(msg!("git.revert.applied_detail", summary = &summary)),
+                                        None,
+                                        branch_name.clone(),
+                                    ),
                                     cx,
                                 );
                             }
@@ -2276,8 +2288,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Revert,
-                                format!("Revert of {} failed", short_id),
-                                e.to_string(),
+                                msg!("git.revert.failed", commit = &short_id),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -2308,7 +2320,7 @@ impl GitProject {
         let short_id = oid.to_string()[..7].to_string();
         let operation_id = self.begin_operation(
             GitOperationKind::CherryPick,
-            format!("Cherry-picking {}...", short_id),
+            msg!("git.cherry_pick.running", commit = &short_id),
             None,
             branch_name.clone(),
             cx,
@@ -2318,7 +2330,7 @@ impl GitProject {
                 .background_executor()
                 .spawn(async move {
                     let repo = Repository::open(&worktree_path)?;
-                    ensure_clean_worktree(&repo, "Cherry-pick")?;
+                    ensure_clean_worktree(&repo, GitOperationKind::CherryPick.name())?;
                     let commit = repo.find_commit(oid)?;
                     let summary = commit.summary().unwrap_or("").to_string();
                     let mut opts = git2::CherrypickOptions::new();
@@ -2342,8 +2354,8 @@ impl GitProject {
                                 this.fail_op(
                                     operation_id,
                                     GitOperationKind::CherryPick,
-                                    format!("Cherry-pick of {} needs conflict resolution", short_id),
-                                    "Resolve the conflicts in the working tree, then commit the cherry-pick manually.".to_string(),
+                                    msg!("git.cherry_pick.conflict", commit = &short_id),
+                                    msg!("git.cherry_pick.resolve_guide"),
                                     (None, branch_name.clone(), false),
                                     cx,
                                 );
@@ -2351,11 +2363,15 @@ impl GitProject {
                                 this.complete_op(
                                     operation_id,
                                     GitOperationKind::CherryPick,
-                                    format!("Cherry-picked {}", short_id),
-                                    (Some(format!(
-                                        "Cherry-pick for '{}' has been applied. Review the changes and commit them manually.",
-                                        summary
-                                    )), None, branch_name.clone()),
+                                    msg!("git.cherry_pick.done", commit = &short_id),
+                                    (
+                                        Some(msg!(
+                                            "git.cherry_pick.applied_detail",
+                                            summary = &summary
+                                        )),
+                                        None,
+                                        branch_name.clone(),
+                                    ),
                                     cx,
                                 );
                             }
@@ -2365,8 +2381,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::CherryPick,
-                                format!("Cherry-pick of {} failed", short_id),
-                                e.to_string(),
+                                msg!("git.cherry_pick.failed", commit = &short_id),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -2391,10 +2407,10 @@ impl GitProject {
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch_at(&worktree_path);
-        let state_label = self.repo_state_at(&worktree_path).label().to_string();
+        let operation = self.repo_state_at(&worktree_path).operation();
         let operation_id = self.begin_operation(
             GitOperationKind::Merge,
-            format!("Aborting {}...", state_label.to_lowercase()),
+            msg!("git.abort.running", operation = &operation),
             None,
             branch_name.clone(),
             cx,
@@ -2432,12 +2448,8 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Merge,
-                                format!("{} aborted", state_label),
-                                (
-                                    Some("Working tree has been reset to HEAD.".into()),
-                                    None,
-                                    branch_name.clone(),
-                                ),
+                                msg!("git.abort.done", operation = &operation),
+                                (Some(msg!("git.abort.detail")), None, branch_name.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::RepositoryChanged);
@@ -2446,8 +2458,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Merge,
-                                format!("Failed to abort {}", state_label.to_lowercase()),
-                                e.to_string(),
+                                msg!("git.abort.failed", operation = &operation),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -2483,10 +2495,10 @@ impl GitProject {
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch_at(&worktree_path);
         let kind = state.operation_kind();
-        let state_label = state.label().to_string();
+        let operation = state.operation();
         let operation_id = self.begin_operation(
             kind,
-            format!("Continuing {}...", state_label.to_lowercase()),
+            msg!("git.continue.running", operation = &operation),
             None,
             branch_name.clone(),
             cx,
@@ -2500,9 +2512,7 @@ impl GitProject {
 
                     let index = repo.index()?;
                     if index.has_conflicts() {
-                        anyhow::bail!(
-                            "There are still unresolved conflicts. Resolve all conflicts before continuing."
-                        );
+                        return Err(error(msg!("git.error.unresolved_conflicts")));
                     }
                     drop(index);
 
@@ -2512,10 +2522,12 @@ impl GitProject {
                             drop(repo);
                             run_continue_subcommand(&worktree_path, subcommand)?
                         }
-                        None => anyhow::bail!(
-                            "There is no {} to continue.",
-                            state.label().to_lowercase()
-                        ),
+                        None => {
+                            return Err(error(msg!(
+                                "git.error.nothing_to_continue",
+                                operation = state.operation()
+                            )));
+                        }
                     };
 
                     let data = gather_refresh_data(&repo_path, commit_limit)?;
@@ -2531,8 +2543,8 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 kind,
-                                format!("{} completed", state_label),
-                                (Some(summary), None, branch_name.clone()),
+                                msg!("git.continue.done", operation = &operation),
+                                (Some(Message::verbatim(summary)), None, branch_name.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::RepositoryChanged);
@@ -2541,8 +2553,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 kind,
-                                format!("Could not continue {}", state_label.to_lowercase()),
-                                e.to_string(),
+                                msg!("git.continue.failed", operation = &operation),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -2565,18 +2577,18 @@ impl GitProject {
         let current_branch = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Merge,
-            format!("Merging '{}'...", branch_name),
+            msg!("git.merge.running", branch = &branch_name),
             None,
             current_branch.clone(),
             cx,
         );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let result: anyhow::Result<(String, RefreshData)> = cx
+            let result: anyhow::Result<(Message, bool, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let msg = {
+                    let (msg, is_conflict) = {
                         let repo = Repository::open(&repo_path)?;
-                        ensure_clean_worktree(&repo, "Merge")?;
+                        ensure_clean_worktree(&repo, GitOperationKind::Merge.name())?;
 
                         let reference = repo
                             .find_branch(&task_branch_name, git2::BranchType::Local)
@@ -2589,37 +2601,40 @@ impl GitProject {
                         let (analysis, _pref) = repo.merge_analysis(&[&annotated_commit])?;
 
                         if analysis.is_up_to_date() {
-                            "Already up to date".to_string()
+                            (msg!("git.merge.up_to_date"), false)
                         } else if analysis.is_fast_forward() {
                             let head = repo.head()?;
-                            let head_branch_name =
-                                head.shorthand().unwrap_or("HEAD").to_string();
+                            let head_branch_name = head.shorthand().unwrap_or("HEAD").to_string();
                             let refname = format!("refs/heads/{}", head_branch_name);
                             let target = repo.find_object(annotated_commit.id(), None)?;
                             // Check out before moving the ref. A safe checkout
                             // refuses rather than clobbering an untracked file,
                             // and leaving the ref alone until it succeeds keeps
                             // HEAD and the working tree in step when it refuses.
-                            checkout_tree_safe(&repo, &target, "Merge")?;
+                            checkout_tree_safe(&repo, &target, GitOperationKind::Merge)?;
                             let mut reference = repo.find_reference(&refname)?;
                             reference.set_target(
                                 annotated_commit.id(),
                                 &format!("Fast-forward merge of '{}'", task_branch_name),
                             )?;
                             repo.set_head(&refname)?;
-                            format!("Merged '{}' (fast-forward)", task_branch_name)
+                            (
+                                msg!("git.merge.done_fast_forward", branch = &task_branch_name),
+                                false,
+                            )
                         } else if analysis.is_normal() {
                             repo.merge(&[&annotated_commit], None, None)?;
 
                             let has_conflicts = repo.index()?.has_conflicts();
                             if has_conflicts {
-                                let conflict_count = repo
-                                    .index()?
-                                    .conflicts()?
-                                    .count();
-                                format!(
-                                    "CONFLICT:{} conflict(s) detected merging '{}'. Resolve and continue.",
-                                    conflict_count, task_branch_name
+                                let conflict_count = repo.index()?.conflicts()?.count();
+                                (
+                                    msgp!(
+                                        "git.merge.conflicts_detail",
+                                        conflict_count,
+                                        branch = &task_branch_name
+                                    ),
+                                    true,
                                 )
                             } else {
                                 let sig = repo.signature()?;
@@ -2627,8 +2642,7 @@ impl GitProject {
                                 let tree_oid = index.write_tree()?;
                                 let tree = repo.find_tree(tree_oid)?;
                                 let head_commit = repo.head()?.peel_to_commit()?;
-                                let merge_commit =
-                                    repo.find_commit(annotated_commit.id())?;
+                                let merge_commit = repo.find_commit(annotated_commit.id())?;
                                 repo.commit(
                                     Some("HEAD"),
                                     &sig,
@@ -2636,39 +2650,35 @@ impl GitProject {
                                     &format!(
                                         "Merge branch '{}' into {}",
                                         task_branch_name,
-                                        repo.head()?
-                                            .shorthand()
-                                            .unwrap_or("HEAD")
+                                        repo.head()?.shorthand().unwrap_or("HEAD")
                                     ),
                                     &tree,
                                     &[&head_commit, &merge_commit],
                                 )?;
                                 repo.cleanup_state()?;
-                                format!("Merged '{}' successfully", task_branch_name)
+                                (msg!("git.merge.done", branch = &task_branch_name), false)
                             }
                         } else {
-                            "Merge complete".to_string()
+                            (msg!("git.merge.complete"), false)
                         }
                     };
 
                     let data = gather_refresh_data(&repo_path, commit_limit)?;
-                    Ok((msg, data))
+                    Ok((msg, is_conflict, data))
                 })
                 .await;
 
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
                     match result {
-                        Ok((msg, data)) => {
-                            let is_conflict = msg.starts_with("CONFLICT:");
+                        Ok((msg, is_conflict, data)) => {
                             this.apply_refresh_data(data);
                             if is_conflict {
-                                let user_msg = msg.trim_start_matches("CONFLICT:").to_string();
                                 this.fail_op(
                                     operation_id,
                                     GitOperationKind::Merge,
-                                    format!("Merge conflicts in '{}'", branch_name),
-                                    user_msg,
+                                    msg!("git.merge.conflict", branch = &branch_name),
+                                    msg,
                                     (None, current_branch.clone(), false),
                                     cx,
                                 );
@@ -2677,7 +2687,7 @@ impl GitProject {
                                     operation_id,
                                     GitOperationKind::Merge,
                                     msg,
-                                    (Some("Repository state refreshed after merge.".into()), None, current_branch.clone()),
+                                    (Some(msg!("git.merge.detail")), None, current_branch.clone()),
                                     cx,
                                 );
                             }
@@ -2687,8 +2697,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Merge,
-                                format!("Merge of '{}' failed", branch_name),
-                                e.to_string(),
+                                msg!("git.merge.failed", branch = &branch_name),
+                                error_message(&e),
                                 (None, current_branch.clone(), false),
                                 cx,
                             );
@@ -2708,7 +2718,7 @@ impl GitProject {
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::RemoveRemote,
-            format!("Removing remote '{}'...", name),
+            msg!("git.remove_remote.running", remote = &name),
             Some(name.clone()),
             branch_name.clone(),
             cx,
@@ -2733,9 +2743,9 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::RemoveRemote,
-                                format!("Removed remote '{}'", name),
+                                msg!("git.remove_remote.done", remote = &name),
                                 (
-                                    Some("Remote list refreshed.".into()),
+                                    Some(msg!("git.remove_remote.detail")),
                                     Some(name.clone()),
                                     branch_name.clone(),
                                 ),
@@ -2748,8 +2758,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::RemoveRemote,
-                                "Removing remote failed",
-                                e.to_string(),
+                                msg!("git.remove_remote.failed"),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -2777,7 +2787,7 @@ impl GitProject {
         let path = path.to_path_buf();
         let operation_id = self.begin_operation(
             GitOperationKind::Clone,
-            format!("Cloning '{}'...", url),
+            msg!("git.clone.running", url = &url),
             None,
             None,
             cx,
@@ -2821,8 +2831,12 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Clone,
-                                format!("Cloned '{}'", url),
-                                (Some(format!("Created: {}", path.display())), None, None),
+                                msg!("git.clone.done", url = &url),
+                                (
+                                    Some(msg!("git.clone.detail", path = path.display())),
+                                    None,
+                                    None,
+                                ),
                                 cx,
                             );
                         })
@@ -2830,22 +2844,21 @@ impl GitProject {
                     Ok(())
                 }
                 Err(e) => {
-                    let message = e.to_string();
-                    log::error!("clone_repo failed: {}", message);
-                    let toast_message = message.clone();
+                    log::error!("clone_repo failed: {}", e);
+                    let toast_message = error_message(&e);
                     cx.update(|cx| {
                         this.update(cx, |this, cx| {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Clone,
-                                "Clone failed",
+                                msg!("git.clone.failed"),
                                 toast_message,
                                 (None, None, false),
                                 cx,
                             );
                         })
                     })?;
-                    Err(anyhow::anyhow!(message))
+                    Err(e)
                 }
             }
         })
@@ -2864,7 +2877,7 @@ impl GitProject {
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Bisect,
-            "Starting bisect...",
+            msg!("git.bisect_start.running"),
             None,
             branch_name.clone(),
             cx,
@@ -2896,9 +2909,9 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Bisect,
-                                "Bisect started".to_string(),
+                                msg!("git.bisect_start.done"),
                                 (
-                                    Some("Mark commits as 'good' or 'bad' to narrow down the problematic commit.".into()),
+                                    Some(msg!("git.bisect_start.detail")),
                                     None,
                                     branch_name.clone(),
                                 ),
@@ -2910,8 +2923,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Bisect,
-                                "Failed to start bisect",
-                                e.to_string(),
+                                msg!("git.bisect_start.failed"),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -2939,7 +2952,7 @@ impl GitProject {
             .unwrap_or_else(|| "HEAD".to_string());
         let operation_id = self.begin_operation(
             GitOperationKind::Bisect,
-            format!("Marking {} as good...", short_id),
+            msg!("git.bisect_good.running", commit = &short_id),
             None,
             branch_name.clone(),
             cx,
@@ -2954,9 +2967,7 @@ impl GitProject {
                     if let Some(ref oid) = oid_str {
                         cmd.arg(oid);
                     }
-                    let output = cmd
-                        .output()
-                        .context("Failed to execute git bisect good")?;
+                    let output = cmd.output().context("Failed to execute git bisect good")?;
 
                     let stdout = String::from_utf8_lossy(&output.stdout);
                     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2987,9 +2998,9 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Bisect,
-                                "Bisect complete!".to_string(),
+                                msg!("git.bisect.complete"),
                                 (
-                                    Some(format!("Found the first bad commit:\n{}", found_msg)),
+                                    Some(msg!("git.bisect.found_detail", commit = &found_msg)),
                                     None,
                                     branch_name.clone(),
                                 ),
@@ -3002,9 +3013,9 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Bisect,
-                                format!("Marked {} as good", short_id),
+                                msg!("git.bisect_good.done", commit = &short_id),
                                 (
-                                    Some("Bisect continues. Test the current commit and mark as good/bad.".into()),
+                                    Some(msg!("git.bisect.continues_detail")),
                                     None,
                                     branch_name.clone(),
                                 ),
@@ -3016,8 +3027,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Bisect,
-                                format!("Failed to mark {} as good", short_id),
-                                e.to_string(),
+                                msg!("git.bisect_good.failed", commit = &short_id),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -3045,7 +3056,7 @@ impl GitProject {
             .unwrap_or_else(|| "HEAD".to_string());
         let operation_id = self.begin_operation(
             GitOperationKind::Bisect,
-            format!("Marking {} as bad...", short_id),
+            msg!("git.bisect_bad.running", commit = &short_id),
             None,
             branch_name.clone(),
             cx,
@@ -3060,9 +3071,7 @@ impl GitProject {
                     if let Some(ref oid) = oid_str {
                         cmd.arg(oid);
                     }
-                    let output = cmd
-                        .output()
-                        .context("Failed to execute git bisect bad")?;
+                    let output = cmd.output().context("Failed to execute git bisect bad")?;
 
                     let stdout = String::from_utf8_lossy(&output.stdout);
                     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3093,9 +3102,9 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Bisect,
-                                "Bisect complete!".to_string(),
+                                msg!("git.bisect.complete"),
                                 (
-                                    Some(format!("Found the first bad commit:\n{}", found_msg)),
+                                    Some(msg!("git.bisect.found_detail", commit = &found_msg)),
                                     None,
                                     branch_name.clone(),
                                 ),
@@ -3108,9 +3117,9 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Bisect,
-                                format!("Marked {} as bad", short_id),
+                                msg!("git.bisect_bad.done", commit = &short_id),
                                 (
-                                    Some("Bisect continues. Test the current commit and mark as good/bad.".into()),
+                                    Some(msg!("git.bisect.continues_detail")),
                                     None,
                                     branch_name.clone(),
                                 ),
@@ -3122,8 +3131,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Bisect,
-                                format!("Failed to mark {} as bad", short_id),
-                                e.to_string(),
+                                msg!("git.bisect_bad.failed", commit = &short_id),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -3152,14 +3161,14 @@ impl GitProject {
             .unwrap_or_else(|| "HEAD".to_string());
         let operation_id = self.begin_operation(
             GitOperationKind::Bisect,
-            format!("Skipping {}...", short_id),
+            msg!("git.bisect_skip.running", commit = &short_id),
             None,
             branch_name.clone(),
             cx,
         );
         let oid_str = oid.map(|o| o.to_string());
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let result: anyhow::Result<(Option<String>, RefreshData)> = cx
+            let result: anyhow::Result<(bool, Option<String>, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
                     let mut cmd = super::git_command();
@@ -3180,11 +3189,7 @@ impl GitProject {
                     let exhausted = stdout.contains("only skipped commits left to test")
                         || stderr.contains("only skipped commits left to test");
                     let message = if exhausted {
-                        Some(
-                            "Bisect cannot continue: only skipped commits remain.\n\
-                             Consider using 'Bisect Reset' and manually narrowing down."
-                                .into(),
-                        )
+                        None
                     } else {
                         // git bisect skip outputs lines like:
                         // "Skipping commit <sha>"
@@ -3198,44 +3203,44 @@ impl GitProject {
                     };
 
                     let data = gather_refresh_data(&repo_path, commit_limit)?;
-                    Ok((message, data))
+                    Ok((exhausted, message, data))
                 })
                 .await;
 
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
                     match result {
-                        Ok((Some(msg), data)) if msg.contains("cannot continue") => {
+                        Ok((true, _, data)) => {
                             this.apply_refresh_data(data);
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Bisect,
-                                "Bisect exhausted".to_string(),
-                                msg,
+                                msg!("git.bisect.exhausted"),
+                                msg!("git.bisect.exhausted_detail"),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::RepositoryChanged);
                         }
-                        Ok((Some(msg), data)) => {
+                        Ok((false, Some(output), data)) => {
                             this.apply_refresh_data(data);
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Bisect,
-                                format!("Skipped {}", short_id),
-                                (Some(msg), None, branch_name.clone()),
+                                msg!("git.bisect_skip.done", commit = &short_id),
+                                (Some(Message::verbatim(output)), None, branch_name.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::RepositoryChanged);
                         }
-                        Ok((None, data)) => {
+                        Ok((false, None, data)) => {
                             this.apply_refresh_data(data);
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Bisect,
-                                format!("Skipped {}", short_id),
+                                msg!("git.bisect_skip.done", commit = &short_id),
                                 (
-                                    Some("Bisect continues. Test the current commit.".into()),
+                                    Some(msg!("git.bisect_skip.continues_detail")),
                                     None,
                                     branch_name.clone(),
                                 ),
@@ -3247,8 +3252,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Bisect,
-                                format!("Failed to skip {}", short_id),
-                                e.to_string(),
+                                msg!("git.bisect_skip.failed", commit = &short_id),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -3269,7 +3274,7 @@ impl GitProject {
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Bisect,
-            "Resetting bisect...",
+            msg!("git.bisect_reset.running"),
             None,
             branch_name.clone(),
             cx,
@@ -3301,9 +3306,9 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Bisect,
-                                "Bisect reset".to_string(),
+                                msg!("git.bisect_reset.done"),
                                 (
-                                    Some("Returned to original branch/commit.".into()),
+                                    Some(msg!("git.bisect_reset.detail")),
                                     None,
                                     branch_name.clone(),
                                 ),
@@ -3315,8 +3320,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Bisect,
-                                "Failed to reset bisect",
-                                e.to_string(),
+                                msg!("git.bisect_reset.failed"),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -3341,7 +3346,7 @@ impl GitProject {
         let name_clone = name.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Worktree,
-            format!("Creating worktree '{}'...", name),
+            msg!("git.create_worktree.running", name = &name),
             None,
             self.head_branch.clone(),
             cx,
@@ -3381,7 +3386,7 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Worktree,
-                                format!("Created worktree '{}'", name_clone),
+                                msg!("git.create_worktree.done", name = &name_clone),
                                 (None, None, this.head_branch.clone()),
                                 cx,
                             );
@@ -3391,8 +3396,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Worktree,
-                                format!("Create worktree '{}' failed", name_clone),
-                                e.to_string(),
+                                msg!("git.create_worktree.failed", name = &name_clone),
+                                error_message(&e),
                                 (None, this.head_branch.clone(), false),
                                 cx,
                             );
@@ -3411,7 +3416,7 @@ impl GitProject {
         let display_path = path.display().to_string();
         let operation_id = self.begin_operation(
             GitOperationKind::Worktree,
-            format!("Removing worktree '{}'...", display_path),
+            msg!("git.remove_worktree.running", path = &display_path),
             None,
             self.head_branch.clone(),
             cx,
@@ -3446,7 +3451,7 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Worktree,
-                                format!("Removed worktree '{}'", display_path),
+                                msg!("git.remove_worktree.done", path = &display_path),
                                 (None, None, this.head_branch.clone()),
                                 cx,
                             );
@@ -3456,8 +3461,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Worktree,
-                                format!("Remove worktree '{}' failed", display_path),
-                                e.to_string(),
+                                msg!("git.remove_worktree.failed", path = &display_path),
+                                error_message(&e),
                                 (None, this.head_branch.clone(), false),
                                 cx,
                             );
@@ -3531,7 +3536,7 @@ impl GitProject {
         let branch_name = self.head_branch_at(&worktree_path);
         let operation_id = self.begin_operation(
             GitOperationKind::ResolveConflict,
-            format!("Saving conflict result for '{}'...", file_name),
+            msg!("git.save_conflict.running", file = &file_name),
             None,
             branch_name.clone(),
             cx,
@@ -3554,9 +3559,9 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::ResolveConflict,
-                                "Conflict resolved and staged",
+                                msg!("git.save_conflict.done"),
                                 (
-                                    Some(format!("Saved and staged '{}'.", file_name)),
+                                    Some(msg!("git.save_conflict.detail", file = &file_name)),
                                     None,
                                     branch_name.clone(),
                                 ),
@@ -3569,8 +3574,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::ResolveConflict,
-                                "Conflict resolution failed",
-                                error.to_string(),
+                                msg!("git.resolve_conflict.failed"),
+                                error_message(&error),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -3627,16 +3632,19 @@ impl GitProject {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| path.clone());
         let branch_name = self.head_branch_at(&worktree_path);
-        let side_label = match side {
-            ConflictSide::Ours => "ours",
-            ConflictSide::Theirs => "theirs",
+        let (running, accepted) = match side {
+            ConflictSide::Ours => (
+                msg!("git.resolve_conflict.running_ours", file = &file_name),
+                msg!("git.resolve_conflict.accepted_ours", file = &file_name),
+            ),
+            ConflictSide::Theirs => (
+                msg!("git.resolve_conflict.running_theirs", file = &file_name),
+                msg!("git.resolve_conflict.accepted_theirs", file = &file_name),
+            ),
         };
         let operation_id = self.begin_operation(
             GitOperationKind::ResolveConflict,
-            format!(
-                "Resolving conflict using '{}' for '{}'...",
-                side_label, file_name
-            ),
+            running,
             None,
             branch_name.clone(),
             cx,
@@ -3658,15 +3666,8 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::ResolveConflict,
-                                "Conflict resolved",
-                                (
-                                    Some(format!(
-                                        "Accepted '{}' version of '{}'.",
-                                        side_label, file_name
-                                    )),
-                                    None,
-                                    branch_name.clone(),
-                                ),
+                                msg!("git.resolve_conflict.done"),
+                                (Some(accepted), None, branch_name.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::RepositoryChanged);
@@ -3676,8 +3677,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::ResolveConflict,
-                                "Conflict resolution failed",
-                                e.to_string(),
+                                msg!("git.resolve_conflict.failed"),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -7217,7 +7218,8 @@ mod tests {
 
         let repo = git2::Repository::open(fixture.path()).unwrap();
         let target = repo.revparse_single("refs/heads/feature").unwrap();
-        let err = super::checkout_tree_safe(&repo, &target, "Merge").unwrap_err();
+        let err = super::checkout_tree_safe(&repo, &target, crate::types::GitOperationKind::Merge)
+            .unwrap_err();
 
         let msg = err.to_string();
         assert!(
@@ -7241,7 +7243,7 @@ mod tests {
 
         let repo = git2::Repository::open(fixture.path()).unwrap();
         let target = repo.revparse_single("refs/heads/feature").unwrap();
-        super::checkout_tree_safe(&repo, &target, "Merge").unwrap();
+        super::checkout_tree_safe(&repo, &target, crate::types::GitOperationKind::Merge).unwrap();
 
         assert_eq!(
             fs::read_to_string(fixture.path().join("notes.txt")).unwrap(),
@@ -7251,11 +7253,14 @@ mod tests {
 
     #[test]
     fn format_path_list_summarises_beyond_three() {
-        assert_eq!(super::format_path_list(&["a.txt".to_string()]), "a.txt");
+        assert_eq!(
+            super::format_path_list(&["a.txt".to_string()]).english(),
+            "a.txt"
+        );
 
         let many: Vec<String> = (0..5).map(|i| format!("f{i}.txt")).collect();
         assert_eq!(
-            super::format_path_list(&many),
+            super::format_path_list(&many).english(),
             "f0.txt, f1.txt, f2.txt and 2 more"
         );
     }

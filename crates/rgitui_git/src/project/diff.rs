@@ -1,5 +1,7 @@
+use super::messages::error_message;
 use anyhow::Result;
 use git2::{DiffOptions, IndexEntry, MergeFileOptions, Repository};
+use rgitui_i18n::{msg, msgp};
 use std::path::{Path, PathBuf};
 
 use crate::types::*;
@@ -730,10 +732,10 @@ impl GitProject {
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Stage,
-            format!(
-                "Staging hunk {} in {}...",
-                hunk_index + 1,
-                file_path.display()
+            msg!(
+                "git.stage_hunk.running",
+                hunk = hunk_index + 1,
+                path = file_path.display()
             ),
             None,
             branch_name.clone(),
@@ -766,10 +768,10 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stage,
-                                format!(
-                                    "Staged hunk {} in {}",
-                                    hunk_index + 1,
-                                    file_path.display()
+                                msg!(
+                                    "git.stage_hunk.done",
+                                    hunk = hunk_index + 1,
+                                    path = file_path.display()
                                 ),
                                 (None, None, branch_name.clone()),
                                 cx,
@@ -780,8 +782,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stage,
-                                "Stage hunk failed",
-                                e.to_string(),
+                                msg!("git.stage_hunk.failed"),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -812,10 +814,10 @@ impl GitProject {
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Unstage,
-            format!(
-                "Unstaging hunk {} in {}...",
-                hunk_index + 1,
-                file_path.display()
+            msg!(
+                "git.unstage_hunk.running",
+                hunk = hunk_index + 1,
+                path = file_path.display()
             ),
             None,
             branch_name.clone(),
@@ -849,10 +851,10 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
-                                format!(
-                                    "Unstaged hunk {} in {}",
-                                    hunk_index + 1,
-                                    file_path.display()
+                                msg!(
+                                    "git.unstage_hunk.done",
+                                    hunk = hunk_index + 1,
+                                    path = file_path.display()
                                 ),
                                 (None, None, branch_name.clone()),
                                 cx,
@@ -863,8 +865,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
-                                "Unstage hunk failed",
-                                e.to_string(),
+                                msg!("git.unstage_hunk.failed"),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -897,11 +899,10 @@ impl GitProject {
         let line_pairs_owned = line_pairs.to_vec();
         let operation_id = self.begin_operation(
             GitOperationKind::Stage,
-            format!(
-                "Staging {} line{} in {}...",
+            msgp!(
+                "git.stage_lines.running",
                 line_count,
-                if line_count == 1 { "" } else { "s" },
-                file_path.display()
+                path = file_path.display()
             ),
             None,
             branch_name.clone(),
@@ -938,11 +939,10 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stage,
-                                format!(
-                                    "Staged {} line{} in {}",
+                                msgp!(
+                                    "git.stage_lines.done",
                                     line_count,
-                                    if line_count == 1 { "" } else { "s" },
-                                    file_path.display()
+                                    path = file_path.display()
                                 ),
                                 (None, None, branch_name.clone()),
                                 cx,
@@ -953,8 +953,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stage,
-                                "Stage lines failed",
-                                e.to_string(),
+                                msg!("git.stage_lines.failed"),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -987,11 +987,10 @@ impl GitProject {
         let line_pairs_owned = line_pairs.to_vec();
         let operation_id = self.begin_operation(
             GitOperationKind::Unstage,
-            format!(
-                "Unstaging {} line{} in {}...",
+            msgp!(
+                "git.unstage_lines.running",
                 line_count,
-                if line_count == 1 { "" } else { "s" },
-                file_path.display()
+                path = file_path.display()
             ),
             None,
             branch_name.clone(),
@@ -1030,11 +1029,10 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
-                                format!(
-                                    "Unstaged {} line{} in {}",
+                                msgp!(
+                                    "git.unstage_lines.done",
                                     line_count,
-                                    if line_count == 1 { "" } else { "s" },
-                                    file_path.display()
+                                    path = file_path.display()
                                 ),
                                 (None, None, branch_name.clone()),
                                 cx,
@@ -1045,8 +1043,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
-                                "Unstage lines failed",
-                                e.to_string(),
+                                msg!("git.unstage_lines.failed"),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );

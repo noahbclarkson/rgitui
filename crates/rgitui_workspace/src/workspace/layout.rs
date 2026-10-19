@@ -502,11 +502,11 @@ impl Render for Workspace {
             .error(self.operations.last_failed_git_operation.is_some())
             .head_detached(head_detached);
         if !repo_state.is_clean() {
-            status_bar = status_bar.repo_state_label(repo_state.label());
+            status_bar = status_bar.repo_state_label(repo_state.label().translated());
         }
 
         if let Some(msg) = &self.status_message {
-            status_bar = status_bar.operation_message(msg.clone());
+            status_bar = status_bar.operation_message(msg.translated().to_string());
         }
 
         let operation_banner = if let Some(update) = self
@@ -556,14 +556,14 @@ impl Render for Workspace {
                             .min_w_0()
                             .flex_1()
                             .child(
-                                Label::new(SharedString::from(update.summary.clone()))
+                                Label::new(update.summary.translated())
                                     .size(LabelSize::Small)
                                     .weight(gpui::FontWeight::SEMIBOLD)
                                     .truncate(),
                             )
                             .when_some(details, |el, details| {
                                 el.child(
-                                    Label::new(SharedString::from(details))
+                                    Label::new(details.translated())
                                         .size(LabelSize::XSmall)
                                         .color(Color::Muted)
                                         .truncate(),
@@ -625,7 +625,7 @@ impl Render for Workspace {
                     })
                 };
                 if !repo_state.is_clean() {
-                    title = title.repo_state(repo_state.label());
+                    title = title.repo_state(repo_state.label().translated());
                 }
                 title
             })
@@ -637,7 +637,7 @@ impl Render for Workspace {
             // Conflict state banner (merge/rebase/cherry-pick/revert in progress)
             .when(!repo_state.is_clean(), |el| {
                 let has_conflicts = conflict_count > 0;
-                let state_label: SharedString = repo_state.label().into();
+                let state_label = repo_state.label().translated();
                 let detail_msg = if has_conflicts {
                     tp!("workspace.conflict.files", conflict_count)
                 } else {
@@ -911,14 +911,12 @@ impl Render for Workspace {
                                     .active_operations
                                     .last()
                                     .map(|op| {
+                                        let label = op.label.translated();
                                         let elapsed = op.started_at.elapsed().as_secs();
                                         if elapsed >= 2 {
-                                            SharedString::from(format!(
-                                                "{} ({}s)",
-                                                op.label, elapsed
-                                            ))
+                                            SharedString::from(format!("{} ({}s)", label, elapsed))
                                         } else {
-                                            op.label.clone()
+                                            label
                                         }
                                     })
                                     .unwrap_or_else(|| t!("workspace.loading"));

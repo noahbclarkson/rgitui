@@ -1,6 +1,8 @@
+use super::messages::error_message;
 use anyhow::{Context as _, Result};
 use git2::Repository;
 use gpui::{AsyncApp, Context, Task, WeakEntity};
+use rgitui_i18n::{msg, msgp, Message};
 use std::path::Path;
 
 use crate::types::*;
@@ -34,7 +36,7 @@ impl GitProject {
             Err(error) => {
                 return self.fail_to_start_task(
                     GitOperationKind::Fetch,
-                    "Fetch could not start",
+                    msg!("git.fetch.not_started"),
                     error,
                     true,
                     worktree_path,
@@ -57,7 +59,7 @@ impl GitProject {
                 Err(error) => {
                     return self.fail_to_start_task(
                         GitOperationKind::Pull,
-                        "Pull could not start",
+                        msg!("git.pull.not_started"),
                         error,
                         true,
                         worktree_path,
@@ -85,7 +87,7 @@ impl GitProject {
                 Err(error) => {
                     return self.fail_to_start_task(
                         GitOperationKind::push(force),
-                        "Push could not start",
+                        msg!("git.push.not_started"),
                         error,
                         true,
                         worktree_path,
@@ -122,7 +124,7 @@ impl GitProject {
         let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
             GitOperationKind::Fetch,
-            format!("Fetching from '{}'...", remote_name),
+            msg!("git.fetch.running", remote = &remote_name),
             Some(remote_name.clone()),
             self.head_branch_at(worktree_path),
             cx,
@@ -150,9 +152,11 @@ impl GitProject {
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Fetch,
-                                format!("Fetched from '{}'", remote_name),
+                                msg!("git.fetch.done", remote = &remote_name),
                                 (
-                                    details.or(Some("Remote refs refreshed.".into())),
+                                    details
+                                        .map(Message::verbatim)
+                                        .or(Some(msg!("git.fetch.detail"))),
                                     Some(remote_name.clone()),
                                     this.head_branch.clone(),
                                 ),
@@ -165,8 +169,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Fetch,
-                                format!("Fetch from '{}' failed", remote_name),
-                                e.to_string(),
+                                msg!("git.fetch.failed", remote = &remote_name),
+                                error_message(&e),
                                 (Some(remote_name.clone()), this.head_branch.clone(), true),
                                 cx,
                             );
@@ -199,7 +203,7 @@ impl GitProject {
             Err(error) => {
                 return self.fail_to_start_task(
                     GitOperationKind::Pull,
-                    "Pull could not start",
+                    msg!("git.pull.not_started"),
                     error,
                     true,
                     worktree_path,
@@ -232,19 +236,23 @@ impl GitProject {
         let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
             GitOperationKind::Pull,
-            format!("Pulling '{}' from '{}'...", branch_name, remote_name),
+            msg!(
+                "git.pull.running",
+                branch = &branch_name,
+                remote = &remote_name
+            ),
             Some(remote_name.clone()),
             Some(branch_name.clone()),
             cx,
         );
         self.note_operation_worktree(operation_id, worktree_path);
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let result: anyhow::Result<(String, Option<String>, RefreshData)> = cx
+            let result: anyhow::Result<(Message, bool, Option<String>, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let (msg, details) = {
+                    let (msg, is_conflict, details) = {
                         let repo = Repository::open(&task_worktree_path)?;
-                        ensure_clean_worktree(&repo, "Pull")?;
+                        ensure_clean_worktree(&repo, GitOperationKind::Pull.name())?;
                         drop(repo);
 
                         validate_remote_name(&task_remote_name)?;
@@ -259,17 +267,19 @@ impl GitProject {
                                     .map(|text| text.contains("Already up to date."))
                                     .unwrap_or(false)
                                 {
-                                    format!(
-                                        "'{}' is already up to date with '{}'",
-                                        task_branch_name, task_remote_name
+                                    msg!(
+                                        "git.pull.up_to_date",
+                                        branch = &task_branch_name,
+                                        remote = &task_remote_name
                                     )
                                 } else {
-                                    format!(
-                                        "Pulled '{}' from '{}'",
-                                        task_branch_name, task_remote_name
+                                    msg!(
+                                        "git.pull.done",
+                                        branch = &task_branch_name,
+                                        remote = &task_remote_name
                                     )
                                 };
-                                (msg, details)
+                                (msg, false, details)
                             }
                             Err(e) => {
                                 let error_msg = e.to_string();
@@ -277,13 +287,14 @@ impl GitProject {
                                     || error_msg.contains("Automatic merge failed")
                                 {
                                     let repo = Repository::open(&task_worktree_path)?;
-                                    let conflict_count =
-                                        repo.index()?.conflicts()?.count();
-                                    let msg = format!(
-                                        "CONFLICT:{} conflict(s) during pull from '{}/{}'. Resolve and continue.",
-                                        conflict_count, task_remote_name, task_branch_name
+                                    let conflict_count = repo.index()?.conflicts()?.count();
+                                    let msg = msgp!(
+                                        "git.pull.conflicts_detail",
+                                        conflict_count,
+                                        remote = &task_remote_name,
+                                        branch = &task_branch_name
                                     );
-                                    (msg, Some(error_msg))
+                                    (msg, true, Some(error_msg))
                                 } else {
                                     return Err(e);
                                 }
@@ -292,23 +303,21 @@ impl GitProject {
                     }; // repo dropped here
 
                     let data = gather_refresh_data(&repo_path, commit_limit)?;
-                    Ok((msg, details, data))
+                    Ok((msg, is_conflict, details, data))
                 })
                 .await;
 
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
                     match result {
-                        Ok((msg, details, data)) => {
-                            let is_conflict = msg.starts_with("CONFLICT:");
+                        Ok((msg, is_conflict, details, data)) => {
                             this.apply_refresh_data(data);
                             if is_conflict {
-                                let user_msg = msg.trim_start_matches("CONFLICT:").to_string();
                                 this.fail_op(
                                     operation_id,
                                     GitOperationKind::Pull,
-                                    format!("Pull from '{}' has conflicts", remote_name),
-                                    user_msg,
+                                    msg!("git.pull.conflict", remote = &remote_name),
+                                    msg,
                                     (Some(remote_name.clone()), Some(branch_name.clone()), false),
                                     cx,
                                 );
@@ -317,9 +326,13 @@ impl GitProject {
                                     operation_id,
                                     GitOperationKind::Pull,
                                     msg,
-                                    (details.or(Some(
-                                        "Repository state refreshed after pull.".into(),
-                                    )), Some(remote_name.clone()), Some(branch_name.clone())),
+                                    (
+                                        details
+                                            .map(Message::verbatim)
+                                            .or(Some(msg!("git.pull.detail"))),
+                                        Some(remote_name.clone()),
+                                        Some(branch_name.clone()),
+                                    ),
                                     cx,
                                 );
                             }
@@ -330,8 +343,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Pull,
-                                format!("Pull from '{}' failed", remote_name),
-                                e.to_string(),
+                                msg!("git.pull.failed", remote = &remote_name),
+                                error_message(&e),
                                 (Some(remote_name.clone()), Some(branch_name.clone()), true),
                                 cx,
                             );
@@ -365,7 +378,7 @@ impl GitProject {
             Err(error) => {
                 return self.fail_to_start_task(
                     GitOperationKind::push(force),
-                    "Push could not start",
+                    msg!("git.push.not_started"),
                     error,
                     true,
                     worktree_path,
@@ -410,12 +423,17 @@ impl GitProject {
         let operation_id = self.begin_operation(
             kind,
             if force {
-                format!(
-                    "Force pushing to '{}/{}'...",
-                    remote_name, remote_branch_name
+                msg!(
+                    "git.force_push.running",
+                    remote = &remote_name,
+                    branch = &remote_branch_name
                 )
             } else {
-                format!("Pushing to '{}/{}'...", remote_name, remote_branch_name)
+                msg!(
+                    "git.push.running",
+                    remote = &remote_name,
+                    branch = &remote_branch_name
+                )
             },
             Some(remote_name.clone()),
             Some(remote_branch_name.clone()),
@@ -423,7 +441,7 @@ impl GitProject {
         );
         self.note_operation_worktree(operation_id, worktree_path);
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let result: anyhow::Result<(String, Option<String>, RefreshData)> = cx
+            let result: anyhow::Result<(Message, Option<String>, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
                     let (msg, details) = {
@@ -446,19 +464,25 @@ impl GitProject {
                         args.push(refspec.as_str());
                         let details = run_git_network_command(&task_worktree_path, &args)?;
                         let msg = if force {
-                            format!(
-                                "Force pushed '{}' to '{}/{}'",
-                                branch_name, task_remote_name, task_remote_branch_name
+                            msg!(
+                                "git.force_push.done",
+                                branch = &branch_name,
+                                remote = &task_remote_name,
+                                remote_branch = &task_remote_branch_name
                             )
                         } else if set_upstream {
-                            format!(
-                                "Pushed '{}' to '{}/{}' and set upstream",
-                                branch_name, task_remote_name, task_remote_branch_name
+                            msg!(
+                                "git.push.done_set_upstream",
+                                branch = &branch_name,
+                                remote = &task_remote_name,
+                                remote_branch = &task_remote_branch_name
                             )
                         } else {
-                            format!(
-                                "Pushed '{}' to '{}/{}'",
-                                branch_name, task_remote_name, task_remote_branch_name
+                            msg!(
+                                "git.push.done",
+                                branch = &branch_name,
+                                remote = &task_remote_name,
+                                remote_branch = &task_remote_branch_name
                             )
                         };
                         (msg, details)
@@ -478,7 +502,9 @@ impl GitProject {
                                 kind,
                                 msg,
                                 (
-                                    details.or(Some("Remote refs refreshed after push.".into())),
+                                    details
+                                        .map(Message::verbatim)
+                                        .or(Some(msg!("git.push.detail"))),
                                     Some(remote_name.clone()),
                                     Some(remote_branch_name.clone()),
                                 ),
@@ -492,11 +518,11 @@ impl GitProject {
                                 operation_id,
                                 kind,
                                 if force {
-                                    format!("Force push to '{}' failed", remote_name)
+                                    msg!("git.force_push.failed", remote = &remote_name)
                                 } else {
-                                    format!("Push to '{}' failed", remote_name)
+                                    msg!("git.push.failed", remote = &remote_name)
                                 },
-                                e.to_string(),
+                                error_message(&e),
                                 (
                                     Some(remote_name.clone()),
                                     Some(remote_branch_name.clone()),

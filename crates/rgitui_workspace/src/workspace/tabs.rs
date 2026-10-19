@@ -2,6 +2,7 @@ use anyhow::Result;
 use gpui::prelude::*;
 use gpui::Context;
 use rgitui_git::GitProject;
+use rgitui_i18n::Message;
 use rgitui_settings::{LayoutSettings, StoredWorkspace};
 
 use crate::command_palette::CommandContext;
@@ -395,7 +396,10 @@ impl Workspace {
 
         self.refresh_all_tabs_prioritized(cx);
 
-        self.set_status_message(format!("Opened workspace '{}'", snapshot.name), cx);
+        self.set_status_message(
+            Message::verbatim(format!("Opened workspace '{}'", snapshot.name)),
+            cx,
+        );
         self.persist_workspace_snapshot(cx);
         cx.notify();
         Ok(())
@@ -466,8 +470,6 @@ impl Workspace {
     pub(super) fn clear_active_workspace_state(&mut self, cx: &mut Context<Self>) {
         self.active_workspace_id = None;
         self.status_message = None;
-        self.operations.is_loading = false;
-        self.operations.loading_message = None;
         self.operations.active_git_operation = None;
         self.operations.last_failed_git_operation = None;
         self.operations.active_operations.clear();

@@ -1,6 +1,8 @@
+use super::messages::{error, error_message};
 use anyhow::{Context as _, Result};
 use git2::Repository;
 use gpui::{AsyncApp, Context, Task, WeakEntity};
+use rgitui_i18n::{msg, msgp, Message};
 
 use crate::types::*;
 
@@ -28,23 +30,23 @@ impl GitProject {
         let entry_count = entries.len();
         let operation_id = self.begin_operation(
             GitOperationKind::Rebase,
-            format!("Rebasing {} commits...", entry_count),
+            msgp!("git.rebase.running", entry_count),
             None,
             branch_name.clone(),
             cx,
         );
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let result: anyhow::Result<(String, RefreshData)> = cx
+            let result: anyhow::Result<(Message, bool, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
                     if entries.is_empty() {
-                        anyhow::bail!("No entries provided for interactive rebase");
+                        return Err(error(msg!("git.error.no_rebase_entries")));
                     }
 
                     let base_oid = {
                         let repo = Repository::open(&repo_path)?;
-                        ensure_clean_worktree(&repo, "Interactive rebase")?;
+                        ensure_clean_worktree(&repo, msg!("git.operation.interactive_rebase"))?;
 
                         // The plan must cover exactly HEAD's contiguous first-parent
                         // range `base..HEAD`. Derive that range from HEAD itself
@@ -73,12 +75,10 @@ impl GitProject {
                         let range_set: std::collections::HashSet<git2::Oid> =
                             range.iter().copied().collect();
                         if plan_set != range_set {
-                            anyhow::bail!(
-                                "Interactive rebase plan does not match the current branch's \
-                                 history (the selected commits are not exactly the last {} \
-                                 first-parent commits of HEAD). Refresh and try again.",
+                            return Err(error(msgp!(
+                                "git.error.rebase_plan_mismatch",
                                 entries.len()
-                            );
+                            )));
                         }
 
                         base.to_string()
@@ -181,19 +181,13 @@ impl GitProject {
 
                     if output.status.success() {
                         let data = gather_refresh_data(&repo_path, commit_limit)?;
-                        Ok((
-                            format!("Rebased {} commits successfully", entry_count),
-                            data,
-                        ))
+                        Ok((msgp!("git.rebase.done", entry_count), false, data))
                     } else if stderr.contains("CONFLICT") || stderr.contains("could not apply") {
                         let data = gather_refresh_data(&repo_path, commit_limit)?;
                         let detail: String = stderr.lines().take(3).collect::<Vec<_>>().join(" ");
                         Ok((
-                            format!(
-                                "CONFLICT:Rebase paused due to conflicts. \
-                                 Resolve conflicts and use Continue or Abort. {}",
-                                detail
-                            ),
+                            msg!("git.rebase.paused_detail", detail = &detail),
+                            true,
                             data,
                         ))
                     } else {
@@ -209,16 +203,14 @@ impl GitProject {
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
                     match result {
-                        Ok((msg, data)) => {
-                            let is_conflict = msg.starts_with("CONFLICT:");
+                        Ok((msg, is_conflict, data)) => {
                             this.apply_refresh_data(data);
                             if is_conflict {
-                                let user_msg = msg.trim_start_matches("CONFLICT:").to_string();
                                 this.fail_op(
                                     operation_id,
                                     GitOperationKind::Rebase,
-                                    "Rebase paused due to conflicts",
-                                    user_msg,
+                                    msg!("git.rebase.paused"),
+                                    msg,
                                     (None, branch_name.clone(), false),
                                     cx,
                                 );
@@ -227,11 +219,7 @@ impl GitProject {
                                     operation_id,
                                     GitOperationKind::Rebase,
                                     msg,
-                                    (
-                                        Some("Repository state refreshed after rebase.".into()),
-                                        None,
-                                        branch_name.clone(),
-                                    ),
+                                    (Some(msg!("git.rebase.detail")), None, branch_name.clone()),
                                     cx,
                                 );
                             }
@@ -241,8 +229,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Rebase,
-                                "Interactive rebase failed",
-                                e.to_string(),
+                                msg!("git.rebase.failed"),
+                                error_message(&e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
