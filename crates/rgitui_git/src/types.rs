@@ -584,6 +584,13 @@ impl GitOperationKind {
         matches!(self, GitOperationKind::Push | GitOperationKind::ForcePush)
     }
 
+    /// Whether this operation succeeding settles an earlier failure of
+    /// `failed`. Either kind of push publishes the branch, so either one
+    /// settles a failed push.
+    pub fn settles(&self, failed: GitOperationKind) -> bool {
+        *self == failed || (self.is_push() && failed.is_push())
+    }
+
     pub fn display_name(&self) -> &'static str {
         match self {
             GitOperationKind::Fetch => "Fetch",
@@ -916,5 +923,14 @@ mod tests {
         assert!(GitOperationKind::Push.is_push());
         assert!(GitOperationKind::ForcePush.is_push());
         assert!(!GitOperationKind::Pull.is_push());
+    }
+
+    #[test]
+    fn either_push_settles_a_failed_push() {
+        assert!(GitOperationKind::Push.settles(GitOperationKind::ForcePush));
+        assert!(GitOperationKind::ForcePush.settles(GitOperationKind::Push));
+        assert!(GitOperationKind::Fetch.settles(GitOperationKind::Fetch));
+        assert!(!GitOperationKind::Pull.settles(GitOperationKind::Push));
+        assert!(!GitOperationKind::Push.settles(GitOperationKind::Pull));
     }
 }

@@ -1359,7 +1359,7 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                             .operations
                             .last_failed_git_operation
                             .as_ref()
-                            .is_some_and(|op| op.kind == update.kind)
+                            .is_some_and(|op| update.kind.settles(op.kind))
                         {
                             this.operations.last_failed_git_operation = None;
                         }
