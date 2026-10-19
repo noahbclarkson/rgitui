@@ -64,8 +64,6 @@ pub(crate) struct OperationState {
     pub last_failed_git_operation: Option<GitOperationUpdate>,
     pub active_operations: Vec<ActiveOperation>,
     pub last_operation_output: Option<OperationOutput>,
-    pub is_loading: bool,
-    pub loading_message: Option<String>,
     /// The panel the in-flight AI generation writes to. The generator refuses
     /// to start a second generation while one is running, so one slot is all
     /// there can ever be.

@@ -13,7 +13,7 @@ use rgitui_git::{
     RebaseEntryAction, RebasePlanEntry, Signature,
 };
 use rgitui_graph::{GraphView, GraphViewEvent, WorktreeGraphInfo};
-use rgitui_i18n::t;
+use rgitui_i18n::{msg, Message};
 
 use crate::{
     cache::LruCache, BisectView, BisectViewEvent, BlameView, BlameViewEvent, BranchDialog,
@@ -314,7 +314,7 @@ pub(super) fn subscribe_interactive_rebase(
 
                     let count = entries.len();
                     let msg = format!("Interactive rebase started with {} commits.", count);
-                    this.set_status_message(msg.clone(), cx);
+                    this.set_status_message(Message::verbatim(msg.clone()), cx);
                     this.show_toast(msg, ToastKind::Info, cx);
                 }
             }
@@ -365,7 +365,7 @@ pub(super) fn subscribe_ai(cx: &mut Context<Workspace>, ai: &Entity<AiGenerator>
             // The status bar alone. A toast here was a third signal for one
             // event, and it expired at 3s while a tool-calling generation runs
             // 30s or more.
-            this.set_status_message("Generating AI commit message...", cx);
+            this.set_status_message(Message::verbatim("Generating AI commit message..."), cx);
         }
         AiEvent::ToolCallStarted(id, description) => {
             // Routed to the chip as well as the status bar: this text is the
@@ -375,7 +375,7 @@ pub(super) fn subscribe_ai(cx: &mut Context<Workspace>, ai: &Entity<AiGenerator>
                 let description = description.clone();
                 panel.update(cx, |cp, cx| cp.set_ai_progress(Some(description), cx));
             }
-            this.set_status_message(format!("AI: {}", description), cx);
+            this.set_status_message(Message::verbatim(format!("AI: {}", description)), cx);
         }
         AiEvent::GenerationCompleted(id, message) => {
             let panel = commit_panel_for(this, id);
@@ -387,7 +387,7 @@ pub(super) fn subscribe_ai(cx: &mut Context<Workspace>, ai: &Entity<AiGenerator>
             };
             let message = message.clone();
             panel.update(cx, |cp, cx| cp.apply_ai_message(message, cx));
-            this.set_status_message("AI commit message ready.", cx);
+            this.set_status_message(Message::verbatim("AI commit message ready."), cx);
         }
         AiEvent::GenerationFailed(id, error) => {
             log::error!("AI generation failed: {}", error);
@@ -395,7 +395,7 @@ pub(super) fn subscribe_ai(cx: &mut Context<Workspace>, ai: &Entity<AiGenerator>
                 panel.update(cx, |cp, cx| cp.fail_ai_generation(cx));
             }
             clear_ai_target(this, id);
-            this.set_status_message(error.clone(), cx);
+            this.set_status_message(Message::verbatim(error.clone()), cx);
             // Sticky, and carrying the fix: an AI failure is almost always a
             // key or a model choice, both of which live one click away.
             let workspace = cx.entity().downgrade();
@@ -418,7 +418,7 @@ pub(super) fn subscribe_ai(cx: &mut Context<Workspace>, ai: &Entity<AiGenerator>
                 panel.update(cx, |cp, cx| cp.cancel_ai_generation(cx));
             }
             clear_ai_target(this, id);
-            this.set_status_message("AI generation cancelled.", cx);
+            this.set_status_message(Message::verbatim("AI generation cancelled."), cx);
         }
         AiEvent::RateLimited { wait } => {
             // Info, not an error, and deliberately without touching any
@@ -435,7 +435,7 @@ pub(super) fn subscribe_ai(cx: &mut Context<Workspace>, ai: &Entity<AiGenerator>
             if !ai.read(cx).is_generating() {
                 this.show_toast(message.clone(), ToastKind::Info, cx);
             }
-            this.set_status_message(message, cx);
+            this.set_status_message(Message::verbatim(message), cx);
         }
     })
     .detach();
@@ -1318,40 +1318,34 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
             GitProjectEvent::OperationUpdated(update) => {
                 let is_running = update.state == GitOperationState::Running;
                 let operation_id = update.id;
-                let summary = update.summary.translated();
-                let failure_message = match &update.details {
-                    Some(details) => t!(
+                // Everything kept past this event holds the `Message` and
+                // translates it when drawn; only the toasts, which are gone in
+                // seconds, are translated here.
+                let failure = match &update.details {
+                    Some(details) => msg!(
                         "workspace.operation.failure",
-                        summary = summary,
-                        details = details.translated()
+                        summary = &update.summary,
+                        details = details
                     ),
-                    None => summary.clone(),
+                    None => update.summary.clone(),
                 };
 
                 match update.state {
                     GitOperationState::Running => {
-                        this.operations.is_loading = true;
-                        this.operations.loading_message = Some(summary.to_string());
-                        this.set_status_message(summary.to_string(), cx);
+                        this.set_status_message(update.summary.clone(), cx);
                         this.operations.active_git_operation = Some(update.clone());
                         this.operations.active_operations.push(ActiveOperation {
                             id: operation_id,
-                            label: summary.clone(),
+                            label: update.summary.clone(),
                             started_at: Instant::now(),
                         });
-                        this.show_toast(summary, ToastKind::Info, cx);
+                        this.show_toast(update.summary.translated(), ToastKind::Info, cx);
                     }
                     GitOperationState::Succeeded => {
                         this.operations
                             .active_operations
                             .retain(|op| op.id != operation_id);
-                        this.operations.is_loading = !this.operations.active_operations.is_empty();
-                        this.operations.loading_message = this
-                            .operations
-                            .active_operations
-                            .last()
-                            .map(|op| op.label.to_string());
-                        this.set_status_message(summary.to_string(), cx);
+                        this.set_status_message(update.summary.clone(), cx);
                         if this
                             .operations
                             .active_git_operation
@@ -1368,34 +1362,27 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                         {
                             this.operations.last_failed_git_operation = None;
                         }
-                        let output_text = update
+                        if let Some(details) = update
                             .details
                             .as_ref()
-                            .map(|details| details.translated().to_string())
-                            .unwrap_or_default();
-                        if !output_text.is_empty() {
+                            .filter(|details| !details.translated().is_empty())
+                        {
                             let now = Instant::now();
                             this.operations.last_operation_output = Some(OperationOutput {
-                                operation: update.kind.name().translated(),
-                                output: output_text,
+                                operation: update.kind.name(),
+                                output: details.clone(),
                                 is_error: false,
                                 timestamp: now,
                                 expanded: false,
                             });
                             this.schedule_operation_output_auto_hide(now, cx);
                         }
-                        this.show_toast(summary, ToastKind::Success, cx);
+                        this.show_toast(update.summary.translated(), ToastKind::Success, cx);
                     }
                     GitOperationState::Failed => {
                         this.operations
                             .active_operations
                             .retain(|op| op.id != operation_id);
-                        this.operations.is_loading = !this.operations.active_operations.is_empty();
-                        this.operations.loading_message = this
-                            .operations
-                            .active_operations
-                            .last()
-                            .map(|op| op.label.to_string());
                         if this
                             .operations
                             .active_git_operation
@@ -1405,20 +1392,17 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                             this.operations.active_git_operation = None;
                         }
                         this.operations.last_failed_git_operation = Some(update.clone());
-                        this.set_status_message(failure_message.to_string(), cx);
-                        let error_output = update
-                            .details
-                            .as_ref()
-                            .map(|details| details.translated().to_string())
-                            .unwrap_or_else(|| failure_message.to_string());
+                        this.set_status_message(failure.clone(), cx);
+                        let error_output =
+                            update.details.clone().unwrap_or_else(|| failure.clone());
                         this.operations.last_operation_output = Some(OperationOutput {
-                            operation: update.kind.name().translated(),
+                            operation: update.kind.name(),
                             output: error_output,
                             is_error: true,
                             timestamp: Instant::now(),
                             expanded: true,
                         });
-                        this.show_toast(failure_message, ToastKind::Error, cx);
+                        this.show_toast(failure.translated(), ToastKind::Error, cx);
                     }
                 }
 
@@ -3006,7 +2990,7 @@ pub(super) fn start_ai_generation(
 
     match blocker {
         Some(crate::commit_panel::AiBlocker::NothingStaged) => {
-            workspace.set_status_message("Stage some changes first.", cx);
+            workspace.set_status_message(Message::verbatim("Stage some changes first."), cx);
             return;
         }
         Some(blocker) => {

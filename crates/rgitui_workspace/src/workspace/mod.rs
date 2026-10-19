@@ -24,6 +24,7 @@ use gpui::{
 };
 use rgitui_ai::AiGenerator;
 use rgitui_git::GitProject;
+use rgitui_i18n::Message;
 
 use crate::{ToastKind, ToastLayer};
 
@@ -303,14 +304,14 @@ impl FocusedPanel {
 /// Tracks a long-running git operation in progress.
 pub(super) struct ActiveOperation {
     pub id: u64,
-    pub label: SharedString,
+    pub label: Message,
     pub started_at: Instant,
 }
 
 /// Stores the result of a completed git operation for display in the output bar.
 pub(super) struct OperationOutput {
-    pub operation: SharedString,
-    pub output: String,
+    pub operation: Message,
+    pub output: Message,
     pub is_error: bool,
     pub timestamp: Instant,
     pub expanded: bool,
@@ -339,7 +340,7 @@ pub struct Workspace {
     pub(super) focus: FocusState,
     pub(super) toast_layer: Entity<ToastLayer>,
     pub(super) active_workspace_id: Option<String>,
-    pub(super) status_message: Option<String>,
+    pub(super) status_message: Option<Message>,
     pub(super) status_message_gen: u64,
     pub(super) undo_stack: UndoStack,
     pub(super) layout_save_task: Option<gpui::Task<()>>,
@@ -474,8 +475,6 @@ impl Workspace {
                 last_failed_git_operation: None,
                 active_operations: Vec::new(),
                 last_operation_output: None,
-                is_loading: false,
-                loading_message: None,
                 ai_target: None,
             },
             focus: FocusState {
@@ -584,9 +583,11 @@ impl Workspace {
         });
     }
 
-    /// Set a status bar message that auto-clears after 5 seconds.
-    pub(super) fn set_status_message(&mut self, msg: impl Into<String>, cx: &mut Context<Self>) {
-        self.status_message = Some(msg.into());
+    /// Set a status bar message that auto-clears after 5 seconds. It is kept
+    /// as a [`Message`] and translated when drawn, so it follows a language
+    /// change.
+    pub(super) fn set_status_message(&mut self, message: Message, cx: &mut Context<Self>) {
+        self.status_message = Some(message);
         self.status_message_gen += 1;
         let gen = self.status_message_gen;
         cx.spawn(

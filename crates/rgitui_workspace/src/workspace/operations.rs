@@ -65,17 +65,11 @@ impl Workspace {
             Color::Success
         };
 
-        let operation_label = output.operation.clone();
-        let first_line: SharedString = output
-            .output
-            .lines()
-            .next()
-            .unwrap_or("")
-            .to_string()
-            .into();
-        let full_output: SharedString = output.output.clone().into();
+        let operation_label = output.operation.translated();
+        let full_output = output.output.translated();
+        let first_line: SharedString = full_output.lines().next().unwrap_or("").to_string().into();
         let expanded = output.expanded;
-        let has_multiple_lines = output.output.lines().count() > 1;
+        let has_multiple_lines = full_output.lines().count() > 1;
 
         let mut bar = div()
             .id("operation-output-bar")

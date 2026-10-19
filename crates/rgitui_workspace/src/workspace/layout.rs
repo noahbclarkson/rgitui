@@ -506,7 +506,7 @@ impl Render for Workspace {
         }
 
         if let Some(msg) = &self.status_message {
-            status_bar = status_bar.operation_message(msg.clone());
+            status_bar = status_bar.operation_message(msg.translated().to_string());
         }
 
         let operation_banner = if let Some(update) = self
@@ -911,14 +911,12 @@ impl Render for Workspace {
                                     .active_operations
                                     .last()
                                     .map(|op| {
+                                        let label = op.label.translated();
                                         let elapsed = op.started_at.elapsed().as_secs();
                                         if elapsed >= 2 {
-                                            SharedString::from(format!(
-                                                "{} ({}s)",
-                                                op.label, elapsed
-                                            ))
+                                            SharedString::from(format!("{} ({}s)", label, elapsed))
                                         } else {
-                                            op.label.clone()
+                                            label
                                         }
                                     })
                                     .unwrap_or_else(|| t!("workspace.loading"));
