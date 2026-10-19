@@ -502,7 +502,6 @@ impl RepoState {
         }
     }
 
-    /// Human-readable label for the repo state.
     /// The state as a label: "Merging", "Rebasing (interactive)".
     pub fn label(&self) -> Message {
         match self {
