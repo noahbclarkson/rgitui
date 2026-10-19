@@ -125,15 +125,7 @@ impl StashesPanel {
         };
         ws.update(cx, |ws, cx| {
             ws.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                cd.show_visible(
-                    "Drop Stash",
-                    format!(
-                        "Are you sure you want to drop stash@{{{}}}? This cannot be undone.",
-                        index
-                    ),
-                    crate::ConfirmAction::StashDrop(index),
-                    cx,
-                );
+                cd.show_visible(crate::ConfirmAction::StashDrop(index), cx);
             });
         });
     }

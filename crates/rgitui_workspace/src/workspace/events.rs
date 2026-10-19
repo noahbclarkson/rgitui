@@ -826,7 +826,7 @@ pub(super) fn subscribe_confirm_dialog(
                                 proj.remove_remote(&name, cx).detach();
                             });
                         }
-                        ConfirmAction::AbortMerge => {
+                        ConfirmAction::AbortOperation(_) => {
                             let worktree_path = this.effective_worktree_path(cx);
                             project.update(cx, |proj, cx| {
                                 proj.abort_operation_at(&worktree_path, cx).detach();
@@ -1587,26 +1587,13 @@ pub(super) fn subscribe_sidebar(
             SidebarEvent::RemoteRemove(name) => {
                 let name = name.clone();
                 this.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                    cd.show_visible(
-                        "Remove Remote",
-                        format!(
-                            "Remove remote '{}' and its configured URLs from this repository?",
-                            name
-                        ),
-                        ConfirmAction::RemoveRemote(name),
-                        cx,
-                    );
+                    cd.show_visible(ConfirmAction::RemoveRemote(name), cx);
                 });
             }
             SidebarEvent::DiscardFile(path) => {
                 let path = path.clone();
                 this.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                    cd.show_visible(
-                        "Discard Changes",
-                        format!("Are you sure you want to discard changes to {}?", path),
-                        ConfirmAction::DiscardFile(path),
-                        cx,
-                    );
+                    cd.show_visible(ConfirmAction::DiscardFile(path), cx);
                 });
             }
             SidebarEvent::StashSelected(index) => {
@@ -1747,19 +1734,9 @@ pub(super) fn subscribe_sidebar(
                             cx,
                         );
                     } else {
-                        let path_display = wt.path.display().to_string();
-                        let path = wt.path.clone();
+                        let path = wt.path.to_string_lossy().to_string();
                         this.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                            cd.show_visible(
-                                "Remove Worktree",
-                                format!(
-                                    "Are you sure you want to remove worktree '{}'? \
-                                     This will delete the working tree at '{}'.",
-                                    wt.name, path_display
-                                ),
-                                ConfirmAction::WorktreeRemove(path.to_string_lossy().to_string()),
-                                cx,
-                            );
+                            cd.show_visible(ConfirmAction::WorktreeRemove(path), cx);
                         });
                     }
                 }
@@ -1795,12 +1772,7 @@ pub(super) fn subscribe_sidebar(
             SidebarEvent::BranchDelete(name) => {
                 let name = name.clone();
                 this.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                    cd.show_visible(
-                        "Delete Branch",
-                        format!("Are you sure you want to delete branch '{}'?", name),
-                        ConfirmAction::BranchDelete(name),
-                        cx,
-                    );
+                    cd.show_visible(ConfirmAction::BranchDelete(name), cx);
                 });
             }
             SidebarEvent::OpenRepo => {
@@ -1817,15 +1789,7 @@ pub(super) fn subscribe_sidebar(
             SidebarEvent::TagDelete(name) => {
                 let name = name.clone();
                 this.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                    cd.show_visible(
-                        "Delete Tag",
-                        format!(
-                            "Are you sure you want to delete tag '{}'? This cannot be undone.",
-                            name
-                        ),
-                        ConfirmAction::TagDelete(name),
-                        cx,
-                    );
+                    cd.show_visible(ConfirmAction::TagDelete(name), cx);
                 });
             }
             SidebarEvent::StashApply(index) => {
@@ -1844,15 +1808,7 @@ pub(super) fn subscribe_sidebar(
             SidebarEvent::StashDrop(index) => {
                 let index = *index;
                 this.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                    cd.show_visible(
-                        "Drop Stash",
-                        format!(
-                            "Are you sure you want to drop stash@{{{}}}? This cannot be undone.",
-                            index
-                        ),
-                        ConfirmAction::StashDrop(index),
-                        cx,
-                    );
+                    cd.show_visible(ConfirmAction::StashDrop(index), cx);
                 });
             }
             SidebarEvent::StashPop(index) => {
@@ -2084,7 +2040,10 @@ pub(super) fn subscribe_graph(
 
                     // Check cache synchronously — instant display on cache hit.
                     let cached = diff_cache.lock().unwrap().get(&commit_oid);
-                    log::debug!("CommitSelected: diff_cache {}", if cached.is_some() { "hit" } else { "miss" });
+                    log::debug!(
+                        "CommitSelected: diff_cache {}",
+                        if cached.is_some() { "hit" } else { "miss" }
+                    );
                     if let Some(cached) = cached {
                         let dv = diff_viewer.clone();
                         let dp = detail_panel_ref.clone();
@@ -2123,9 +2082,7 @@ pub(super) fn subscribe_graph(
                                     if dv.read(cx).generation() != display_generation {
                                         return;
                                     }
-                                    dp.update(cx, |dp, cx| {
-                                        dp.set_commit_arc(info, cached, cx)
-                                    });
+                                    dp.update(cx, |dp, cx| dp.set_commit_arc(info, cached, cx));
                                 });
                             })
                             .detach();
@@ -2138,21 +2095,16 @@ pub(super) fn subscribe_graph(
                         let cache = diff_cache.clone();
                         let oid_str = commit_oid.to_string();
                         let enrich_path = repo_path.clone();
-                        let request_generation =
-                            dv.update(cx, |dv, cx| dv.begin_diff_request(cx));
+                        let request_generation = dv.update(cx, |dv, cx| dv.begin_diff_request(cx));
 
                         cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
                             // Compute diff and enrich commit info in parallel
-                            let diff_task = cx
-                                .background_executor()
-                                .spawn(async move {
-                                    rgitui_git::compute_commit_diff(&repo_path, commit_oid)
-                                });
-                            let enrich_task = cx
-                                .background_executor()
-                                .spawn(async move {
-                                    rgitui_git::enrich_commit_info(&enrich_path, commit_oid)
-                                });
+                            let diff_task = cx.background_executor().spawn(async move {
+                                rgitui_git::compute_commit_diff(&repo_path, commit_oid)
+                            });
+                            let enrich_task = cx.background_executor().spawn(async move {
+                                rgitui_git::enrich_commit_info(&enrich_path, commit_oid)
+                            });
 
                             let diff_result = diff_task.await;
                             let enrich_result = enrich_task.await;
@@ -2160,10 +2112,7 @@ pub(super) fn subscribe_graph(
                             cx.update(|cx| match diff_result {
                                 Ok(commit_diff) => {
                                     let diff_arc = Arc::new(commit_diff);
-                                    cache
-                                        .lock()
-                                        .unwrap()
-                                        .insert(commit_oid, diff_arc.clone());
+                                    cache.lock().unwrap().insert(commit_oid, diff_arc.clone());
 
                                     if dv.read(cx).generation() != request_generation {
                                         return;
@@ -2181,7 +2130,12 @@ pub(super) fn subscribe_graph(
                                     if let Some(first_file) = diff_arc.files.first() {
                                         let path = first_file.path.display().to_string();
                                         dv.update(cx, |dv, cx| {
-                                            dv.set_diff(first_file.clone(), path, DiffSource::Commit(oid_str), cx)
+                                            dv.set_diff(
+                                                first_file.clone(),
+                                                path,
+                                                DiffSource::Commit(oid_str),
+                                                cx,
+                                            )
                                         });
                                     } else {
                                         dv.update(cx, |dv, cx| dv.clear(cx));
@@ -2191,7 +2145,10 @@ pub(super) fn subscribe_graph(
                                     log::error!("Failed to get commit diff: {}", e);
                                     if dv.read(cx).generation() == request_generation {
                                         dv.update(cx, |dv, cx| {
-                                            dv.set_error(format!("Failed to load commit: {}", e), cx)
+                                            dv.set_error(
+                                                format!("Failed to load commit: {}", e),
+                                                cx,
+                                            )
                                         });
                                     }
                                 }
@@ -2204,7 +2161,11 @@ pub(super) fn subscribe_graph(
                     // On miss, this fires AFTER the selected commit task is queued,
                     // so the selected commit gets a thread pool slot first.
                     if !prefetch_oids.is_empty() {
-                        log::debug!("diff_prefetch: starting for {} OIDs around {:.7}", prefetch_oids.len(), commit_oid);
+                        log::debug!(
+                            "diff_prefetch: starting for {} OIDs around {:.7}",
+                            prefetch_oids.len(),
+                            commit_oid
+                        );
                         let prefetch_repo_path = project.read(cx).repo_path().to_path_buf();
                         diff_prefetch.enqueue(prefetch_repo_path, prefetch_oids, cx);
                     }
@@ -2226,10 +2187,7 @@ pub(super) fn subscribe_graph(
                     });
 
                     if let Some(oid_hex) = previous_head_oid {
-                        let label = format!(
-                            "Cherry-pick {}",
-                            &oid_hex[..7.min(oid_hex.len())]
-                        );
+                        let label = format!("Cherry-pick {}", &oid_hex[..7.min(oid_hex.len())]);
                         this.push_undo(label, UndoAction::ResetTo(oid_hex), cx);
                     }
                 }
@@ -2301,11 +2259,7 @@ pub(super) fn subscribe_graph(
                 GraphViewEvent::CopyCommitSha(sha) => {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(sha.clone()));
                     let short = &sha[..7.min(sha.len())];
-                    this.show_toast(
-                        format!("Copied SHA: {}", short),
-                        ToastKind::Success,
-                        cx,
-                    );
+                    this.show_toast(format!("Copied SHA: {}", short), ToastKind::Success, cx);
                 }
                 GraphViewEvent::CopyCommitMessage(msg) => {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(msg.clone()));
@@ -2316,11 +2270,7 @@ pub(super) fn subscribe_graph(
                     } else {
                         first_line.to_string()
                     };
-                    this.show_toast(
-                        format!("Copied: {}", preview),
-                        ToastKind::Success,
-                        cx,
-                    );
+                    this.show_toast(format!("Copied: {}", preview), ToastKind::Success, cx);
                 }
                 GraphViewEvent::CopyAuthorName(name) => {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(name.clone()));
@@ -2372,27 +2322,21 @@ pub(super) fn subscribe_graph(
                         td.show_visible(oid, cx);
                     });
                 }
-                GraphViewEvent::ResetToCommit(oid, sha) => {
+                GraphViewEvent::ResetToCommit(oid) => {
                     let oid = *oid;
-                    let sha = sha.clone();
-                    let short = &sha[..7.min(sha.len())];
                     this.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                        cd.show_visible(
-                            "Reset to Commit",
-                            format!(
-                                "Hard reset the current branch to {}? All uncommitted changes and commits after this point will be lost.",
-                                short
-                            ),
-                            ConfirmAction::ResetHard(oid.to_string()),
-                            cx,
-                        );
+                        cd.show_visible(ConfirmAction::ResetHard(oid.to_string()), cx);
                     });
                 }
                 GraphViewEvent::BisectGood(oid) => {
                     let oid = *oid;
                     let state = project.read(cx).repo_state();
                     if !matches!(state, rgitui_git::RepoState::Bisect) {
-                        this.show_toast("No bisect in progress. Use 'Bisect Start' first.", ToastKind::Warning, cx);
+                        this.show_toast(
+                            "No bisect in progress. Use 'Bisect Start' first.",
+                            ToastKind::Warning,
+                            cx,
+                        );
                     } else {
                         project.update(cx, |proj, cx| {
                             proj.bisect_good(Some(oid), cx).detach();
@@ -2403,7 +2347,11 @@ pub(super) fn subscribe_graph(
                     let oid = *oid;
                     let state = project.read(cx).repo_state();
                     if !matches!(state, rgitui_git::RepoState::Bisect) {
-                        this.show_toast("No bisect in progress. Use 'Bisect Start' first.", ToastKind::Warning, cx);
+                        this.show_toast(
+                            "No bisect in progress. Use 'Bisect Start' first.",
+                            ToastKind::Warning,
+                            cx,
+                        );
                     } else {
                         project.update(cx, |proj, cx| {
                             proj.bisect_bad(Some(oid), cx).detach();
@@ -2475,11 +2423,7 @@ pub(super) fn subscribe_graph(
                     // Build the entry list from HEAD down to (and including) the target.
                     // The interactive rebase editor will rebasing onto the parent of the
                     // first entry (i.e., commits[0]..=commits[target_idx]).
-                    let head_branch = project
-                        .read(cx)
-                        .head_branch()
-                        .unwrap_or("HEAD")
-                        .to_string();
+                    let head_branch = project.read(cx).head_branch().unwrap_or("HEAD").to_string();
                     let base_short = if target_idx > 0 {
                         commits
                             .get(target_idx)
@@ -2511,11 +2455,9 @@ pub(super) fn subscribe_graph(
                     }
 
                     // Use the base short oid as the "onto" target ref in the dialog.
-                    this.overlays
-                        .interactive_rebase
-                        .update(cx, |ir, cx| {
-                            ir.show_visible(entries, format!("{} (rebase onto)", base_short), cx);
-                        });
+                    this.overlays.interactive_rebase.update(cx, |ir, cx| {
+                        ir.show_visible(entries, format!("{} (rebase onto)", base_short), cx);
+                    });
                 }
                 // The context-menu route to squashing. It lands on the same
                 // helper as the `graph::SquashSelected` keystroke, so the
@@ -3265,52 +3207,21 @@ pub(super) fn subscribe_reflog_view(
             ReflogViewEvent::CopyOID(oid) => {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(oid.clone()));
                 let short = &oid[..7.min(oid.len())];
-                this.show_toast(
-                    format!("Copied OID: {}", short),
-                    ToastKind::Success,
-                    cx,
-                );
+                this.show_toast(format!("Copied OID: {}", short), ToastKind::Success, cx);
             }
             ReflogViewEvent::ResetHard(oid) => {
-                let short = &oid[..7.min(oid.len())];
                 this.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                    cd.show_visible(
-                        "Reset (hard)",
-                        format!(
-                            "Hard reset the current branch to {}? All uncommitted changes and commits after this point will be lost.",
-                            short
-                        ),
-                        ConfirmAction::ResetHard(oid.clone()),
-                        cx,
-                    );
+                    cd.show_visible(ConfirmAction::ResetHard(oid.clone()), cx);
                 });
             }
             ReflogViewEvent::ResetSoft(oid) => {
-                let short = &oid[..7.min(oid.len())];
                 this.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                    cd.show_visible(
-                        "Reset (soft)",
-                        format!(
-                            "Soft reset the current branch to {}? Changes will be preserved in the index.",
-                            short
-                        ),
-                        ConfirmAction::ResetSoft(oid.clone()),
-                        cx,
-                    );
+                    cd.show_visible(ConfirmAction::ResetSoft(oid.clone()), cx);
                 });
             }
             ReflogViewEvent::ResetMixed(oid) => {
-                let short = &oid[..7.min(oid.len())];
                 this.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                    cd.show_visible(
-                        "Reset (mixed)",
-                        format!(
-                            "Mixed reset the current branch to {}? Changes will be unstaged.",
-                            short
-                        ),
-                        ConfirmAction::ResetMixed(oid.clone()),
-                        cx,
-                    );
+                    cd.show_visible(ConfirmAction::ResetMixed(oid.clone()), cx);
                 });
             }
         }
