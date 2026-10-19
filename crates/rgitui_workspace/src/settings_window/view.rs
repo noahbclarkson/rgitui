@@ -963,8 +963,10 @@ impl SettingsView {
         )
         .detach();
 
+        // The picker keeps the notes it was handed, so it is rebuilt too.
         cx.observe_global::<rgitui_i18n::ActiveLanguage>(|this, cx| {
-            this.translate_placeholders(cx)
+            this.translate_placeholders(cx);
+            this.sync_model_picker(cx);
         })
         .detach();
 
