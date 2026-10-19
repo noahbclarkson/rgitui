@@ -84,7 +84,7 @@ impl GitProject {
                 Ok(target) => target,
                 Err(error) => {
                     return self.fail_to_start_task(
-                        GitOperationKind::Push,
+                        GitOperationKind::push(force),
                         "Push could not start",
                         error,
                         true,
@@ -364,7 +364,7 @@ impl GitProject {
             Ok(target) => target,
             Err(error) => {
                 return self.fail_to_start_task(
-                    GitOperationKind::Push,
+                    GitOperationKind::push(force),
                     "Push could not start",
                     error,
                     true,
@@ -406,8 +406,9 @@ impl GitProject {
         let task_worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
+        let kind = GitOperationKind::push(force);
         let operation_id = self.begin_operation(
-            GitOperationKind::Push,
+            kind,
             if force {
                 format!(
                     "Force pushing to '{}/{}'...",
@@ -474,7 +475,7 @@ impl GitProject {
                             this.apply_refresh_data(data);
                             this.complete_op(
                                 operation_id,
-                                GitOperationKind::Push,
+                                kind,
                                 msg,
                                 (
                                     details.or(Some("Remote refs refreshed after push.".into())),
@@ -489,8 +490,12 @@ impl GitProject {
                             log::error!("Push failed: {}", e);
                             this.fail_op(
                                 operation_id,
-                                GitOperationKind::Push,
-                                format!("Push to '{}' failed", remote_name),
+                                kind,
+                                if force {
+                                    format!("Force push to '{}' failed", remote_name)
+                                } else {
+                                    format!("Push to '{}' failed", remote_name)
+                                },
                                 e.to_string(),
                                 (
                                     Some(remote_name.clone()),

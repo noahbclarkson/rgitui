@@ -1359,7 +1359,7 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                             .operations
                             .last_failed_git_operation
                             .as_ref()
-                            .is_some_and(|op| op.kind == update.kind)
+                            .is_some_and(|op| update.kind.settles(op.kind))
                         {
                             this.operations.last_failed_git_operation = None;
                         }
@@ -1417,7 +1417,7 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                 toolbar.update(cx, |tb, cx| {
                     tb.set_fetching(is_running && update.kind == GitOperationKind::Fetch, cx);
                     tb.set_pulling(is_running && update.kind == GitOperationKind::Pull, cx);
-                    tb.set_pushing(is_running && update.kind == GitOperationKind::Push, cx);
+                    tb.set_pushing(is_running && update.kind.is_push(), cx);
                 });
             }
         }

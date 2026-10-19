@@ -543,6 +543,9 @@ pub enum GitOperationKind {
     Fetch,
     Pull,
     Push,
+    /// A push with `--force`. Kept apart from [`GitOperationKind::Push`] so a
+    /// retry repeats the push the user confirmed rather than a plain one.
+    ForcePush,
     Checkout,
     Merge,
     CherryPick,
@@ -569,11 +572,31 @@ pub enum GitOperationKind {
 }
 
 impl GitOperationKind {
+    pub fn push(force: bool) -> Self {
+        if force {
+            GitOperationKind::ForcePush
+        } else {
+            GitOperationKind::Push
+        }
+    }
+
+    pub fn is_push(&self) -> bool {
+        matches!(self, GitOperationKind::Push | GitOperationKind::ForcePush)
+    }
+
+    /// Whether this operation succeeding settles an earlier failure of
+    /// `failed`. Either kind of push publishes the branch, so either one
+    /// settles a failed push.
+    pub fn settles(&self, failed: GitOperationKind) -> bool {
+        *self == failed || (self.is_push() && failed.is_push())
+    }
+
     pub fn display_name(&self) -> &'static str {
         match self {
             GitOperationKind::Fetch => "Fetch",
             GitOperationKind::Pull => "Pull",
             GitOperationKind::Push => "Push",
+            GitOperationKind::ForcePush => "Force push",
             GitOperationKind::Checkout => "Checkout",
             GitOperationKind::Merge => "Merge",
             GitOperationKind::CherryPick => "Cherry-pick",
@@ -872,6 +895,7 @@ mod tests {
         assert_eq!(GitOperationKind::Fetch.display_name(), "Fetch");
         assert_eq!(GitOperationKind::Pull.display_name(), "Pull");
         assert_eq!(GitOperationKind::Push.display_name(), "Push");
+        assert_eq!(GitOperationKind::ForcePush.display_name(), "Force push");
         assert_eq!(GitOperationKind::Checkout.display_name(), "Checkout");
         assert_eq!(GitOperationKind::Merge.display_name(), "Merge");
         assert_eq!(GitOperationKind::CherryPick.display_name(), "Cherry-pick");
@@ -890,5 +914,23 @@ mod tests {
         assert_eq!(GitOperationKind::Discard.display_name(), "Discard");
         assert_eq!(GitOperationKind::Rebase.display_name(), "Rebase");
         assert_eq!(GitOperationKind::Bisect.display_name(), "Bisect");
+    }
+
+    #[test]
+    fn push_kind_records_force() {
+        assert_eq!(GitOperationKind::push(false), GitOperationKind::Push);
+        assert_eq!(GitOperationKind::push(true), GitOperationKind::ForcePush);
+        assert!(GitOperationKind::Push.is_push());
+        assert!(GitOperationKind::ForcePush.is_push());
+        assert!(!GitOperationKind::Pull.is_push());
+    }
+
+    #[test]
+    fn either_push_settles_a_failed_push() {
+        assert!(GitOperationKind::Push.settles(GitOperationKind::ForcePush));
+        assert!(GitOperationKind::ForcePush.settles(GitOperationKind::Push));
+        assert!(GitOperationKind::Fetch.settles(GitOperationKind::Fetch));
+        assert!(!GitOperationKind::Pull.settles(GitOperationKind::Push));
+        assert!(!GitOperationKind::Push.settles(GitOperationKind::Pull));
     }
 }

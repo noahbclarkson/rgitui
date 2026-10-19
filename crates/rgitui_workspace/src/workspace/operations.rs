@@ -206,8 +206,8 @@ impl Workspace {
                     true
                 }
             }
-            GitOperationKind::Push => {
-                let force = update.summary.to_ascii_lowercase().contains("force push");
+            GitOperationKind::Push | GitOperationKind::ForcePush => {
+                let force = update.kind == GitOperationKind::ForcePush;
                 if let Some(remote_name) = update.remote_name.as_deref() {
                     proj.push_at(remote_name, force, &worktree_path, cx)
                         .detach();
