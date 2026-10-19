@@ -333,7 +333,7 @@ pub enum GraphViewEvent {
     /// Open this commit on GitHub (or compatible host).
     ViewOnGithub(git2::Oid),
     CreateTagAtCommit(git2::Oid),
-    ResetToCommit(git2::Oid, String),
+    ResetToCommit(git2::Oid),
     /// Request to load more commits beyond the current set.
     LoadMoreCommits,
     /// Toggle "My Commits" filter — show only commits authored by the current user.
@@ -1239,7 +1239,7 @@ impl GraphView {
             GraphMenuAction::CreateTag => GraphViewEvent::CreateTagAtCommit(oid),
             GraphMenuAction::BisectGood => GraphViewEvent::BisectGood(oid),
             GraphMenuAction::BisectBad => GraphViewEvent::BisectBad(oid),
-            GraphMenuAction::Reset => GraphViewEvent::ResetToCommit(oid, oid.to_string()),
+            GraphMenuAction::Reset => GraphViewEvent::ResetToCommit(oid),
             GraphMenuAction::InteractiveRebase => GraphViewEvent::InteractiveRebase(oid),
             GraphMenuAction::SquashSelected => GraphViewEvent::SquashSelected,
             GraphMenuAction::CopySha => GraphViewEvent::CopyCommitSha(oid.to_string()),

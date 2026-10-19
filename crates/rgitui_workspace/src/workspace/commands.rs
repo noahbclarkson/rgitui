@@ -590,32 +590,17 @@ impl Workspace {
             }
             CommandId::ForcePush => {
                 self.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                    cd.show_visible(
-                        "Force Push",
-                        "This will overwrite the remote branch. Are you sure?",
-                        ConfirmAction::ForcePush,
-                        cx,
-                    );
+                    cd.show_visible(ConfirmAction::ForcePush, cx);
                 });
             }
             CommandId::DiscardAll => {
                 self.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                    cd.show_visible(
-                        "Discard All Changes",
-                        "This will permanently discard all uncommitted changes.",
-                        ConfirmAction::DiscardAll,
-                        cx,
-                    );
+                    cd.show_visible(ConfirmAction::DiscardAll, cx);
                 });
             }
             CommandId::CleanUntracked => {
                 self.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                    cd.show_visible(
-                        "Clean Untracked Files",
-                        "This will permanently remove all untracked files and directories. This action cannot be undone.",
-                        ConfirmAction::CleanUntracked,
-                        cx,
-                    );
+                    cd.show_visible(ConfirmAction::CleanUntracked, cx);
                 });
             }
             CommandId::AbortOperation => {
@@ -624,17 +609,8 @@ impl Workspace {
                 if state.is_clean() {
                     self.show_toast("No operation in progress to abort", ToastKind::Warning, cx);
                 } else {
-                    let state_label = state.label().to_string();
                     self.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                        cd.show_visible(
-                            format!("Abort {}", state_label),
-                            format!(
-                                "This will abort the current {} and reset to HEAD. All conflict resolution progress will be lost.",
-                                state_label.to_lowercase()
-                            ),
-                            ConfirmAction::AbortMerge,
-                            cx,
-                        );
+                        cd.show_visible(ConfirmAction::AbortOperation(state), cx);
                     });
                 }
             }
@@ -689,12 +665,7 @@ impl Workspace {
             }
             CommandId::ResetHard => {
                 self.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                    cd.show_visible(
-                        "Reset Hard",
-                        "Hard reset to HEAD? All staged and unstaged changes will be permanently discarded.",
-                        ConfirmAction::ResetHard("HEAD".to_string()),
-                        cx,
-                    );
+                    cd.show_visible(ConfirmAction::ResetHard("HEAD".to_string()), cx);
                 });
             }
             CommandId::RenameBranch => {
