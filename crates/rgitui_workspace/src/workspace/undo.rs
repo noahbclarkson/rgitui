@@ -4,6 +4,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use gpui::Context;
+use rgitui_i18n::{msg, msgp, t, Message};
 
 use crate::ToastKind;
 
@@ -18,7 +19,8 @@ const UNDO_EXPIRY_SECS: u64 = 60;
 /// An undoable operation with the data needed to reverse it.
 #[derive(Debug, Clone)]
 pub struct UndoEntry {
-    pub label: String,
+    /// What the action did, translated when a toast shows it.
+    pub label: Message,
     pub action: UndoAction,
     pub created_at: Instant,
     /// Repository the action was performed on (the active tab's repo at push
@@ -60,13 +62,13 @@ pub enum UndoAction {
 
 impl UndoEntry {
     fn for_paths(
-        label: impl Into<String>,
+        label: Message,
         action: UndoAction,
         repo_path: PathBuf,
         worktree_path: PathBuf,
     ) -> Self {
         Self {
-            label: label.into(),
+            label,
             action,
             created_at: Instant::now(),
             repo_path,
@@ -81,7 +83,7 @@ impl UndoEntry {
     #[cfg(test)]
     pub(crate) fn expired_entry(label: &str, action: UndoAction) -> Self {
         UndoEntry {
-            label: label.to_string(),
+            label: Message::verbatim(label.to_string()),
             action,
             // subtract enough time to make it expired
             created_at: Instant::now()
@@ -134,22 +136,6 @@ impl UndoStack {
         self.entries.retain(|e| !e.is_expired());
         before - self.entries.len()
     }
-
-    /// True when there are no live (non-expired) entries.
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.count() == 0
-    }
-
-    /// Peek at the most-recent non-expired entry label without consuming it.
-    #[allow(dead_code)]
-    pub fn peek_label(&self) -> Option<&str> {
-        self.entries
-            .iter()
-            .rev()
-            .find(|e| !e.is_expired())
-            .map(|e| e.label.as_str())
-    }
 }
 
 // ── Workspace glue ────────────────────────────────────────────────────────────
@@ -159,12 +145,7 @@ impl Workspace {
     /// is stamped with the active tab's repository and effective worktree so
     /// `execute_undo` can route the reversal back to the originating repo rather
     /// than whichever tab is active when undo is pressed.
-    pub fn push_undo(
-        &mut self,
-        label: impl Into<String>,
-        action: UndoAction,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn push_undo(&mut self, label: Message, action: UndoAction, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.get(self.active_tab) else {
             return;
         };
@@ -178,7 +159,7 @@ impl Workspace {
     /// tab, which may have changed while the filesystem work was running.
     pub fn push_undo_for_paths(
         &mut self,
-        label: impl Into<String>,
+        label: Message,
         action: UndoAction,
         repo_path: PathBuf,
         worktree_path: PathBuf,
@@ -202,7 +183,7 @@ impl Workspace {
     /// Execute the most recent undo operation, if any, and show a result toast.
     pub fn execute_undo(&mut self, cx: &mut Context<Self>) {
         let Some(undo) = self.undo_stack.pop() else {
-            self.show_toast("Nothing to undo", ToastKind::Info, cx);
+            self.show_toast(t!("workspace.undo.nothing"), ToastKind::Info, cx);
             return;
         };
 
@@ -218,9 +199,9 @@ impl Workspace {
             .position(|t| t.project.read(cx).repo_path() == undo.repo_path)
         else {
             self.show_toast(
-                format!(
-                    "Can't undo \"{}\": its repository is no longer open",
-                    undo.label
+                t!(
+                    "workspace.undo.repository_closed",
+                    label = undo.label.translated()
                 ),
                 ToastKind::Error,
                 cx,
@@ -233,13 +214,15 @@ impl Workspace {
         let project = self.tabs[tab_index].project.clone();
         let worktree_path = undo.worktree_path.clone();
 
-        let undo_label = undo.label;
         let remaining = self.undo_stack.count();
-
-        let suffix = if remaining > 0 {
-            format!(" ({remaining} more)")
+        let done = if remaining > 0 {
+            msgp!(
+                "workspace.undo.done_with_more",
+                remaining,
+                label = undo.label
+            )
         } else {
-            String::new()
+            msg!("workspace.undo.done", label = undo.label)
         };
 
         match undo.action {
@@ -247,48 +230,32 @@ impl Workspace {
                 project.update(cx, |proj, cx| {
                     proj.create_branch_at(&name, Some(&oid_hex), cx).detach();
                 });
-                self.show_toast(
-                    format!("Undid: {undo_label}{suffix}"),
-                    ToastKind::Success,
-                    cx,
-                );
+                self.show_toast(done.translated(), ToastKind::Success, cx);
             }
             UndoAction::RecreateTag { name, oid_hex } => {
                 if let Ok(oid) = git2::Oid::from_str(&oid_hex) {
                     project.update(cx, |proj, cx| {
                         proj.create_tag(&name, oid, cx).detach();
                     });
-                    self.show_toast(
-                        format!("Undid: {undo_label}{suffix}"),
-                        ToastKind::Success,
-                        cx,
-                    );
+                    self.show_toast(done.translated(), ToastKind::Success, cx);
                 } else {
-                    self.show_toast("Failed to undo: invalid OID", ToastKind::Error, cx);
+                    self.show_toast(t!("workspace.undo.invalid_oid"), ToastKind::Error, cx);
                 }
             }
             UndoAction::PopStash(index) => {
                 project.update(cx, |proj, cx| {
                     proj.stash_pop_at(index, &worktree_path, cx).detach();
                 });
-                self.show_toast(
-                    format!("Undid: {undo_label}{suffix}"),
-                    ToastKind::Success,
-                    cx,
-                );
+                self.show_toast(done.translated(), ToastKind::Success, cx);
             }
             UndoAction::SoftResetHead(oid_hex) => {
                 if let Ok(oid) = git2::Oid::from_str(&oid_hex) {
                     project.update(cx, |proj, cx| {
                         proj.reset_soft_at(oid, &worktree_path, cx).detach();
                     });
-                    self.show_toast(
-                        format!("Undid: {undo_label}{suffix}"),
-                        ToastKind::Success,
-                        cx,
-                    );
+                    self.show_toast(done.translated(), ToastKind::Success, cx);
                 } else {
-                    self.show_toast("Failed to undo: invalid OID", ToastKind::Error, cx);
+                    self.show_toast(t!("workspace.undo.invalid_oid"), ToastKind::Error, cx);
                 }
             }
             UndoAction::ResetTo(oid_hex) => {
@@ -296,13 +263,9 @@ impl Workspace {
                     project.update(cx, |proj, cx| {
                         proj.reset_to_commit_at(oid, &worktree_path, cx).detach();
                     });
-                    self.show_toast(
-                        format!("Undid: {undo_label}{suffix}"),
-                        ToastKind::Success,
-                        cx,
-                    );
+                    self.show_toast(done.translated(), ToastKind::Success, cx);
                 } else {
-                    self.show_toast("Failed to undo: invalid OID", ToastKind::Error, cx);
+                    self.show_toast(t!("workspace.undo.invalid_oid"), ToastKind::Error, cx);
                 }
             }
             UndoAction::UnstageFiles { paths } => {
@@ -311,11 +274,7 @@ impl Workspace {
                 project.update(cx, |proj, cx| {
                     proj.unstage_files_at(&paths, &worktree_path, cx).detach();
                 });
-                self.show_toast(
-                    format!("Undid: {undo_label}{suffix}"),
-                    ToastKind::Success,
-                    cx,
-                );
+                self.show_toast(done.translated(), ToastKind::Success, cx);
             }
             UndoAction::StageFiles { paths } => {
                 let paths: Vec<std::path::PathBuf> =
@@ -323,11 +282,7 @@ impl Workspace {
                 project.update(cx, |proj, cx| {
                     proj.stage_files_at(&paths, &worktree_path, cx).detach();
                 });
-                self.show_toast(
-                    format!("Undid: {undo_label}{suffix}"),
-                    ToastKind::Success,
-                    cx,
-                );
+                self.show_toast(done.translated(), ToastKind::Success, cx);
             }
             UndoAction::RestoreWorktreeFiles { snapshots } => {
                 project.update(cx, |proj, cx| {
@@ -381,7 +336,7 @@ mod tests {
 
     fn make_entry(label: &str) -> UndoEntry {
         UndoEntry {
-            label: label.to_string(),
+            label: Message::verbatim(label.to_string()),
             action: UndoAction::StageFiles {
                 paths: vec!["a.rs".to_string()],
             },
@@ -401,11 +356,11 @@ mod tests {
         assert_eq!(stack.count(), 2);
 
         let top = stack.pop().unwrap();
-        assert_eq!(top.label, "second");
+        assert_eq!(top.label.english(), "second");
         assert_eq!(stack.count(), 1);
 
         let next = stack.pop().unwrap();
-        assert_eq!(next.label, "first");
+        assert_eq!(next.label.english(), "first");
         assert!(stack.pop().is_none());
     }
 
@@ -413,16 +368,6 @@ mod tests {
     fn pop_on_empty_returns_none() {
         let mut stack = UndoStack::new();
         assert!(stack.pop().is_none());
-    }
-
-    #[test]
-    fn is_empty_reflects_count() {
-        let mut stack = UndoStack::new();
-        assert!(stack.is_empty());
-        stack.push(make_entry("x"));
-        assert!(!stack.is_empty());
-        stack.pop();
-        assert!(stack.is_empty());
     }
 
     // ── capacity cap ─────────────────────────────────────────────
@@ -448,9 +393,12 @@ mod tests {
         stack.push(make_entry("newest"));
 
         // Check that op-0 is gone
-        let labels: Vec<_> = stack.entries.iter().map(|e| e.label.as_str()).collect();
-        assert!(!labels.contains(&"op-0"), "op-0 should have been evicted");
-        assert!(labels.contains(&"newest"));
+        let labels: Vec<_> = stack.entries.iter().map(|e| e.label.english()).collect();
+        assert!(
+            !labels.iter().any(|label| label == "op-0"),
+            "op-0 should have been evicted"
+        );
+        assert!(labels.iter().any(|label| label == "newest"));
         assert_eq!(stack.count(), MAX_UNDO_HISTORY);
     }
 
@@ -479,7 +427,7 @@ mod tests {
         stack.push(make_entry("live"));
 
         let popped = stack.pop().unwrap();
-        assert_eq!(popped.label, "live");
+        assert_eq!(popped.label.english(), "live");
         // expired one should have been purged by pop()
         assert_eq!(stack.entries.len(), 0);
     }
@@ -500,32 +448,24 @@ mod tests {
         let removed = stack.purge_expired();
         assert_eq!(removed, 2);
         assert_eq!(stack.count(), 2);
-        let labels: Vec<_> = stack.entries.iter().map(|e| e.label.as_str()).collect();
-        assert!(labels.contains(&"live-a"));
-        assert!(labels.contains(&"live-b"));
+        let labels: Vec<_> = stack.entries.iter().map(|e| e.label.english()).collect();
+        assert!(labels.iter().any(|label| label == "live-a"));
+        assert!(labels.iter().any(|label| label == "live-b"));
     }
 
-    // ── peek_label ───────────────────────────────────────────────
+    // ── toast text ───────────────────────────────────────────────
 
     #[test]
-    fn peek_label_returns_most_recent_live_entry() {
-        let mut stack = UndoStack::new();
-        stack.push(make_entry("alpha"));
-        stack.push(make_entry("beta"));
-        // add an expired one on top
-        stack.entries.push(UndoEntry::expired_entry(
-            "expired-top",
-            UndoAction::PopStash(0),
-        ));
-
-        // peek should skip the expired entry and see "beta"
-        assert_eq!(stack.peek_label(), Some("beta"));
-    }
-
-    #[test]
-    fn peek_label_none_on_empty() {
-        let stack = UndoStack::new();
-        assert!(stack.peek_label().is_none());
+    fn undo_toasts_render_the_label_with_the_sentence_around_it() {
+        let label = msg!("workspace.undo.label.reset", commit = "a1b2c3d");
+        assert_eq!(
+            msg!("workspace.undo.done", label = &label).english(),
+            "Undid: Reset to a1b2c3d"
+        );
+        assert_eq!(
+            msgp!("workspace.undo.done_with_more", 2, label = &label).english(),
+            "Undid: Reset to a1b2c3d (2 more)"
+        );
     }
 
     // ── action variant coverage ──────────────────────────────────
@@ -563,7 +503,7 @@ mod tests {
         let mut stack = UndoStack::new();
         for (i, action) in actions.into_iter().enumerate() {
             stack.push(UndoEntry {
-                label: format!("op-{i}"),
+                label: Message::verbatim(format!("op-{i}")),
                 action,
                 created_at: Instant::now(),
                 repo_path: PathBuf::new(),
@@ -584,7 +524,7 @@ mod tests {
     fn an_apply_undo_entry_carries_the_bytes_it_will_restore() {
         let mut stack = UndoStack::new();
         stack.push(UndoEntry {
-            label: "Applied hunk 1 of src/main.rs from a1b2c3d".to_string(),
+            label: Message::verbatim("Applied hunk 1 of src/main.rs from a1b2c3d"),
             action: UndoAction::RestoreWorktreeFiles {
                 snapshots: vec![
                     rgitui_git::WorktreeFileSnapshot {
@@ -631,7 +571,7 @@ mod tests {
     #[test]
     fn asynchronous_undo_entry_keeps_its_captured_origin_paths() {
         let entry = UndoEntry::for_paths(
-            "Applied a hunk",
+            Message::verbatim("Applied a hunk"),
             UndoAction::RestoreWorktreeFiles { snapshots: vec![] },
             PathBuf::from("originating-repository"),
             PathBuf::from("originating-worktree"),
@@ -676,8 +616,9 @@ mod census {
 
     impl HeapSize for UndoEntry {
         fn heap_size(&self, census: &mut Census) -> usize {
-            self.label.heap_size(census)
-                + self.action.heap_size(census)
+            // The label is a short `Message`, negligible beside the snapshots
+            // and opaque to the census, so it is left out.
+            self.action.heap_size(census)
                 + self.repo_path.heap_size(census)
                 + self.worktree_path.heap_size(census)
         }

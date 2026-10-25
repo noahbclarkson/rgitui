@@ -688,7 +688,7 @@ pub(super) fn subscribe_confirm_dialog(
                             });
                             if let Some(oid_hex) = tip_oid {
                                 this.push_undo(
-                                    format!("Deleted branch '{}'", name),
+                                    msg!("workspace.undo.label.delete_branch", branch = &name),
                                     UndoAction::RecreateBranch { name, oid_hex },
                                     cx,
                                 );
@@ -730,7 +730,7 @@ pub(super) fn subscribe_confirm_dialog(
                                     .detach();
                                 });
                                 this.push_undo(
-                                    "Discarded all changes",
+                                    msg!("workspace.undo.label.discard_all"),
                                     UndoAction::PopStash(0),
                                     cx,
                                 );
@@ -760,7 +760,7 @@ pub(super) fn subscribe_confirm_dialog(
                             });
                             if let Some(oid_hex) = tag_oid {
                                 this.push_undo(
-                                    format!("Deleted tag '{}'", name),
+                                    msg!("workspace.undo.label.delete_tag", tag = &name),
                                     UndoAction::RecreateTag { name, oid_hex },
                                     cx,
                                 );
@@ -792,7 +792,10 @@ pub(super) fn subscribe_confirm_dialog(
                             });
                             if let Some(oid_hex) = previous_head_oid {
                                 this.push_undo(
-                                    format!("Reset to {}", &target[..7.min(target.len())]),
+                                    msg!(
+                                        "workspace.undo.label.reset",
+                                        commit = &target[..7.min(target.len())]
+                                    ),
                                     UndoAction::ResetTo(oid_hex),
                                     cx,
                                 );
@@ -2179,7 +2182,10 @@ pub(super) fn subscribe_graph(
                     });
 
                     if let Some(oid_hex) = previous_head_oid {
-                        let label = format!("Cherry-pick {}", &oid_hex[..7.min(oid_hex.len())]);
+                        let label = msg!(
+                            "workspace.undo.label.cherry_pick",
+                            commit = &oid_hex[..7.min(oid_hex.len())]
+                        );
                         this.push_undo(label, UndoAction::ResetTo(oid_hex), cx);
                     }
                 }
@@ -2200,7 +2206,10 @@ pub(super) fn subscribe_graph(
                     });
 
                     if let Some(oid_hex) = previous_head_oid {
-                        let label = format!("Revert {}", &oid_hex[..7.min(oid_hex.len())]);
+                        let label = msg!(
+                            "workspace.undo.label.revert",
+                            commit = &oid_hex[..7.min(oid_hex.len())]
+                        );
                         this.push_undo(label, UndoAction::ResetTo(oid_hex), cx);
                     }
                 }
@@ -2500,7 +2509,10 @@ pub(super) fn subscribe_detail_panel(
                         });
 
                         if let Some(oid_hex) = previous_head_oid {
-                            let label = format!("Cherry-pick {}", &oid_hex[..7.min(oid_hex.len())]);
+                            let label = msg!(
+                                "workspace.undo.label.cherry_pick",
+                                commit = &oid_hex[..7.min(oid_hex.len())]
+                            );
                             this.push_undo(label, UndoAction::ResetTo(oid_hex), cx);
                         }
                     }
@@ -2878,7 +2890,11 @@ pub(super) fn subscribe_commit_panel(
                 });
                 if !is_amend {
                     if let Some(oid_hex) = previous_head_oid {
-                        this.push_undo("Created commit", UndoAction::SoftResetHead(oid_hex), cx);
+                        this.push_undo(
+                            msg!("workspace.undo.label.commit"),
+                            UndoAction::SoftResetHead(oid_hex),
+                            cx,
+                        );
                     }
                 }
             }

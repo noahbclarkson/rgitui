@@ -339,8 +339,9 @@ pub enum GitProjectEvent {
     /// files held beforehand, which is the only record of it: the previous
     /// contents are not recoverable from git state.
     WorktreePatchApplied {
-        /// Undo label, e.g. "Applied hunk 2 of src/main.rs from a1b2c3d".
-        label: String,
+        /// Undo label, e.g. "Applied hunk 2 of src/main.rs from a1b2c3d",
+        /// translated wherever it is shown.
+        label: Message,
         snapshots: Vec<worktree_patch::WorktreeFileSnapshot>,
         /// Repository entity that started the asynchronous mutation.
         repo_path: PathBuf,

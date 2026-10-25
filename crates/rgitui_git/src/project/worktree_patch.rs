@@ -1576,7 +1576,7 @@ impl GitProject {
                             );
                             if undoable {
                                 cx.emit(GitProjectEvent::WorktreePatchApplied {
-                                    label: summary.translated().to_string(),
+                                    label: summary,
                                     snapshots: outcome.snapshots,
                                     repo_path: origin_repo_path.clone(),
                                     worktree_path: origin_worktree_path.clone(),
