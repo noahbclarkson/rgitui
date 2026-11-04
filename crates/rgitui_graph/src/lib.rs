@@ -70,6 +70,8 @@ const MIN_MESSAGE_COLUMN_WIDTH: f32 = 200.0;
 const ROW_FIXED_WIDTH: f32 = GRAPH_COLUMN_LEFT_INSET + 16.0 + 80.0 + 52.0;
 /// How far from the right edge of a clipped graph column lanes start fading.
 const GRAPH_FADE_WIDTH: f32 = 2.0 * LANE_WIDTH;
+/// Thickness of the lines between commits.
+const GRAPH_EDGE_STROKE: f32 = 2.0;
 /// How long the lanes on screen must stay narrower before the column shrinks
 /// to fit them. Growing is immediate; shrinking waits for scrolling to settle
 /// so the columns to the right don't shift back and forth mid-scroll.
@@ -224,6 +226,13 @@ fn clipped_line_background(
     )
 }
 
+/// Whether any of `edge` lands inside a graph column `column_width` wide. An
+/// edge wholly past the right edge would be built and then masked away, and in
+/// a wide history that is most of a row's edges.
+fn edge_reaches_column(edge: &GraphEdge, column_width: f32) -> bool {
+    lane_center_x(edge.from_lane.min(edge.to_lane)) - GRAPH_EDGE_STROKE / 2.0 < column_width
+}
+
 /// The content mask that keeps a graph cell's painting inside its column.
 ///
 /// Only the sides are clipped: lines deliberately run a few pixels past the
@@ -239,6 +248,60 @@ fn graph_cell_mask(bounds: Bounds<Pixels>) -> ContentMask<Pixels> {
             ),
         ),
     }
+}
+
+/// Which dot a commit gets when no avatar is drawn over it.
+#[derive(Clone, Copy)]
+enum NodeKind {
+    Head,
+    Merge,
+    Normal,
+}
+
+/// Paints a commit's dot: HEAD is larger with a glow, a merge has an outer
+/// ring, and any other commit is a plain filled circle.
+fn paint_node_dot(
+    window: &mut Window,
+    center: Point<Pixels>,
+    kind: NodeKind,
+    scale: f32,
+    color: gpui::Hsla,
+) {
+    let radius = scale
+        * match kind {
+            NodeKind::Head => 5.5,
+            NodeKind::Merge => 5.0,
+            NodeKind::Normal => 4.0,
+        };
+    let halo = match kind {
+        NodeKind::Head => Some((radius + 4.0 * scale, px(2.5), 0.35)),
+        NodeKind::Merge => Some((radius + 2.5, px(1.5), 0.6)),
+        NodeKind::Normal => None,
+    };
+    if let Some((halo_radius, stroke, alpha)) = halo {
+        if let Some(built) = build_stroked_circle(center.x, center.y, halo_radius, stroke) {
+            window.paint_path(built, gpui::Hsla { a: alpha, ..color });
+        }
+    }
+    if let Some(built) = build_filled_circle(center.x, center.y, radius) {
+        window.paint_path(built, color);
+    }
+}
+
+/// Paints a straight stretch of lane. Most of a wide graph is these, and a quad
+/// skips the tessellation and multisampled pass a path goes through.
+fn paint_vertical_lane(
+    window: &mut Window,
+    x: Pixels,
+    top: Pixels,
+    bottom: Pixels,
+    background: impl Into<Background>,
+) {
+    let half_stroke = px(GRAPH_EDGE_STROKE / 2.0);
+    window.paint_quad(gpui::fill(
+        Bounds::from_corners(point(x - half_stroke, top), point(x + half_stroke, bottom)),
+        background,
+    ));
 }
 
 /// A small right-pointing chevron beside a pinned node, marking that the
@@ -2566,8 +2629,10 @@ impl Render for GraphView {
                             // (to_lane == HEAD's node_lane). In both cases the
                             // source lane is drawn full-height at the worktree row;
                             // any bend happens at the HEAD's row below.
-                            let pass_through_edges =
+                            let mut pass_through_edges =
                                 worktree_pass_through_edges(position, &graph_rows);
+                            pass_through_edges
+                                .retain(|edge| edge_reaches_column(edge, graph_col_width));
 
                             return render_working_tree_row(WorkingTreeRowParams {
                                 list_index: i,
@@ -2720,8 +2785,13 @@ impl Render for GraphView {
                             format_relative_time(&commit.time, now_utc)
                         };
 
-                        // Clone only the edges vec for canvas closure (not the entire GraphRow)
-                        let edges: Vec<GraphEdge> = graph_row.edges.clone();
+                        // Clone only the edges the canvas can show (not the entire GraphRow)
+                        let edges: Vec<GraphEdge> = graph_row
+                            .edges
+                            .iter()
+                            .filter(|edge| edge_reaches_column(edge, graph_col_width))
+                            .cloned()
+                            .collect();
                         let row_bg_for_canvas = bg;
 
                         let view_clone = view.clone();
@@ -2874,20 +2944,20 @@ impl Render for GraphView {
                                                     };
                                                     let end_y = origin.y + h + px(4.0);
 
-                                                    let stroke_width = px(2.0);
-
-                                                    let mut path = PathBuilder::stroke(stroke_width);
-
                                                     if from_x == to_x {
-                                                        path.move_to(point(
+                                                        paint_vertical_lane(
+                                                            window,
                                                             origin.x + from_x,
                                                             start_y,
-                                                        ));
-                                                        path.line_to(point(
-                                                            origin.x + to_x,
                                                             end_y,
-                                                        ));
-                                                    } else if edge.from_lane != node_lane {
+                                                            edge_background,
+                                                        );
+                                                        continue;
+                                                    }
+
+                                                    let mut path = PathBuilder::stroke(px(GRAPH_EDGE_STROKE));
+
+                                                    if edge.from_lane != node_lane {
                                                         // Merge-in edge: comes from a different lane
                                                         // above and converges into the node. Curve
                                                         // starts vertical (continuing the branch line
@@ -2965,14 +3035,6 @@ impl Render for GraphView {
                                                     }
                                                 }
 
-                                                // Node dot: HEAD=larger filled, merge=filled+ring, normal=filled
-                                                let dot_radius = if is_head_row {
-                                                    5.5_f32 * compact_mul
-                                                } else if is_merge_commit {
-                                                    5.0_f32 * compact_mul
-                                                } else {
-                                                    4.0_f32 * compact_mul
-                                                };
                                                 let cx_x = origin.x + node_x_px;
                                                 let cy_y = origin.y + mid_y;
                                                 // Background ring to occlude lines passing behind the dot
@@ -2981,43 +3043,17 @@ impl Render for GraphView {
                                                     window.paint_path(built_ring, row_bg_for_canvas);
                                                 }
 
-                                                // HEAD commit: glow ring + filled circle
-                                                if is_head_row {
-                                                    let glow_r = dot_radius + 4.0 * compact_mul;
-                                                    if let Some(built_glow) = build_stroked_circle(cx_x, cy_y, glow_r, px(2.5)) {
-                                                        let glow_color = gpui::Hsla {
-                                                            a: 0.35,
-                                                            ..node_color
-                                                        };
-                                                        window.paint_path(built_glow, glow_color);
-                                                    }
-
-                                                    // Filled circle for HEAD
-                                                    if let Some(built_head) = build_filled_circle(cx_x, cy_y, dot_radius) {
-                                                        window.paint_path(built_head, node_color);
-                                                    }
-                                                } else if is_merge_commit {
-                                                    // Merge commit: filled circle with outer ring
-                                                    if let Some(built_merge) = build_filled_circle(cx_x, cy_y, dot_radius) {
-                                                        window.paint_path(built_merge, node_color);
-                                                    }
-
-                                                    let outer_r = dot_radius + 2.5;
-                                                    if let Some(built_merge) = build_stroked_circle(cx_x, cy_y, outer_r, px(1.5)) {
-                                                        let merge_ring_color = gpui::Hsla {
-                                                            a: 0.6,
-                                                            ..node_color
-                                                        };
-                                                        window.paint_path(
-                                                            built_merge,
-                                                            merge_ring_color,
-                                                        );
-                                                    }
-                                                } else {
-                                                    // Normal commit: filled circle
-                                                    if let Some(built_normal) = build_filled_circle(cx_x, cy_y, dot_radius) {
-                                                        window.paint_path(built_normal, node_color);
-                                                    }
+                                                // An avatar covers the dot entirely, and a dimmed
+                                                // one would let it show through.
+                                                if !show_avatars {
+                                                    let kind = if is_head_row {
+                                                        NodeKind::Head
+                                                    } else if is_merge_commit {
+                                                        NodeKind::Merge
+                                                    } else {
+                                                        NodeKind::Normal
+                                                    };
+                                                    paint_node_dot(window, point(cx_x, cy_y), kind, compact_mul, node_color);
                                                 }
 
                                                 if node_pinned {
@@ -4174,16 +4210,13 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                                         if graph_clipped {
                                             color.a *= clipped_lane_alpha(lane_x, graph_width);
                                         }
-                                        let lane_x = px(lane_x);
-                                        let mut pass = PathBuilder::stroke(px(2.0));
-                                        pass.move_to(point(origin.x + lane_x, origin.y - px(4.0)));
-                                        pass.line_to(point(
-                                            origin.x + lane_x,
+                                        paint_vertical_lane(
+                                            window,
+                                            origin.x + px(lane_x),
+                                            origin.y - px(4.0),
                                             origin.y + h + px(4.0),
-                                        ));
-                                        if let Ok(built) = pass.build() {
-                                            window.paint_path(built, color);
-                                        }
+                                            color,
+                                        );
                                     }
 
                                     // A pending-changes node is a graph tip with one
@@ -4880,6 +4913,30 @@ mod tests {
         assert!(clipped_line_background(color, 30.0, 500.0, width)
             .as_solid()
             .is_none());
+    }
+
+    #[test]
+    fn only_edges_wholly_past_the_column_are_dropped() {
+        let edge = |from_lane, to_lane| GraphEdge {
+            from_lane,
+            to_lane,
+            color_index: 0,
+            is_merge: false,
+        };
+        let width = graph_column_width(50, 270.0);
+        let last_inside = (0..50)
+            .take_while(|&lane| lane_center_x(lane) < width)
+            .last()
+            .unwrap();
+
+        assert!(edge_reaches_column(&edge(last_inside, last_inside), width));
+        assert!(!edge_reaches_column(
+            &edge(last_inside + 1, last_inside + 1),
+            width
+        ));
+        // Crossing the edge in either direction still shows its inside part.
+        assert!(edge_reaches_column(&edge(0, 40), width));
+        assert!(edge_reaches_column(&edge(40, 0), width));
     }
 
     #[test]
