@@ -352,6 +352,14 @@ pub struct Workspace {
     /// Keeps the [`crate::keymap::KeymapState`] observer alive so `keymap.json`
     /// reload problems are toasted as they happen.
     pub(super) _keymap_subscription: gpui::Subscription,
+    /// Redraws every panel from scratch when the theme or settings change.
+    ///
+    /// The main panels are cached views (see `layout.rs`): gpui reuses their
+    /// last frame until the panel itself is notified, and a global changing is
+    /// not a notification. Both globals are read throughout render — colours,
+    /// compactness, graph style — so a change to either refreshes the windows,
+    /// which is the one thing that bypasses every cache.
+    pub(super) _appearance_subscriptions: [gpui::Subscription; 2],
 }
 
 /// Smallest width the left sidebar may take, whether reached by dragging the
@@ -498,6 +506,10 @@ impl Workspace {
             _keymap_subscription: cx.observe_global::<crate::keymap::KeymapState>(
                 |workspace, cx| workspace.show_keymap_problems(cx),
             ),
+            _appearance_subscriptions: [
+                cx.observe_global::<rgitui_theme::ThemeState>(|_, cx| cx.refresh_windows()),
+                cx.observe_global::<rgitui_settings::SettingsState>(|_, cx| cx.refresh_windows()),
+            ],
         }
     }
 

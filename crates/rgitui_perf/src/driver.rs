@@ -42,6 +42,24 @@ pub enum Step {
         #[serde(default)]
         settle: Settle,
     },
+    /// Move the mouse in a straight line from one window position to another,
+    /// as `steps` mouse-move events, with no button pressed.
+    ///
+    /// This is what a person sweeping the pointer over a list does, and every
+    /// time it crosses into another row the hover state changes and something
+    /// has to redraw — the path that made hover feedback trail the pointer.
+    /// Paced with `{"rate": {"hz": 120}}` it arrives like a real mouse, so a
+    /// backlog forms if the app cannot keep up.
+    Hover {
+        from_x: f32,
+        from_y: f32,
+        to_x: f32,
+        to_y: f32,
+        #[serde(default = "one")]
+        steps: usize,
+        #[serde(default)]
+        settle: Settle,
+    },
     /// Move the mouse, then press and release at a window position.
     Click { x: f32, y: f32 },
     /// Sleep for a fixed duration.
@@ -117,6 +135,44 @@ fn one() -> usize {
 
 fn default_timeout_ms() -> u64 {
     30_000
+}
+
+/// The pointer positions a [`Step::Hover`] visits: `steps` evenly spaced points
+/// on the line from `from` to `to`, ending exactly on `to`. The start point
+/// itself is not included — the pointer is assumed to be wherever the last step
+/// left it, and a move to where it already is changes nothing.
+pub fn hover_path(
+    from_x: f32,
+    from_y: f32,
+    to_x: f32,
+    to_y: f32,
+    steps: usize,
+) -> impl Iterator<Item = (f32, f32)> {
+    let steps = steps.max(1);
+    (1..=steps).map(move |i| {
+        let t = i as f32 / steps as f32;
+        (from_x + (to_x - from_x) * t, from_y + (to_y - from_y) * t)
+    })
+}
+
+#[cfg(test)]
+mod hover_path_tests {
+    use super::hover_path;
+
+    #[test]
+    fn ends_exactly_on_the_target() {
+        let path: Vec<_> = hover_path(0.0, 0.0, 10.0, 100.0, 4).collect();
+        assert_eq!(
+            path,
+            vec![(2.5, 25.0), (5.0, 50.0), (7.5, 75.0), (10.0, 100.0)]
+        );
+    }
+
+    #[test]
+    fn zero_steps_still_reaches_the_target() {
+        let path: Vec<_> = hover_path(0.0, 0.0, 10.0, 10.0, 0).collect();
+        assert_eq!(path, vec![(10.0, 10.0)]);
+    }
 }
 
 /// A named, ordered list of steps.

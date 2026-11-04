@@ -137,6 +137,30 @@ async fn execute(step: &Step, cx: &mut AsyncWindowContext) -> anyhow::Result<()>
             }
         }
 
+        Step::Hover {
+            from_x,
+            from_y,
+            to_x,
+            to_y,
+            steps,
+            settle,
+        } => {
+            let mut pacer = Pacer::new(*settle);
+            for (x, y) in crate::driver::hover_path(*from_x, *from_y, *to_x, *to_y, *steps) {
+                cx.update(|window, cx| {
+                    window.dispatch_event(
+                        PlatformInput::MouseMove(MouseMoveEvent {
+                            position: Point::new(px(x), px(y)),
+                            pressed_button: None,
+                            modifiers: Modifiers::default(),
+                        }),
+                        cx,
+                    );
+                })?;
+                pacer.wait(cx).await;
+            }
+        }
+
         Step::Click { x, y } => {
             let position = Point::new(px(*x), px(*y));
             cx.update(|window, cx| {

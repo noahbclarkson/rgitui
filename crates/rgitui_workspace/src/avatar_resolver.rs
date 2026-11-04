@@ -5,7 +5,8 @@ use std::time::Duration;
 use futures::future::select;
 use futures::future::Either;
 use futures::AsyncReadExt;
-use gpui::{App, AsyncApp};
+use futures::FutureExt;
+use gpui::{App, AsyncApp, ImgResourceLoader, Resource, SharedUri};
 use http_client::HttpClient;
 use rgitui_ui::AvatarCache;
 
@@ -32,20 +33,30 @@ pub fn resolve_avatars(authors: Vec<(String, String)>, cx: &mut App) {
         cx.set_global(AvatarCache::new());
     }
 
-    let to_fetch: Vec<(String, String)> = {
+    let (to_fetch, known_urls): (Vec<(String, String)>, Vec<String>) = {
         let cache = cx.global_mut::<AvatarCache>();
-        authors
+        let mut known_urls = Vec::new();
+        let to_fetch = authors
             .into_iter()
             .filter(|(_name, email)| {
                 if cache.needs_fetch(email) {
                     cache.mark_pending(email);
                     true
                 } else {
+                    if let Some(url) = cache.avatar_url(email) {
+                        known_urls.push(url.to_string());
+                    }
                     false
                 }
             })
-            .collect()
+            .collect();
+        (to_fetch, known_urls)
     };
+
+    // Avatars resolved in an earlier session have a URL but no image yet.
+    for url in known_urls {
+        preload_avatar_image(url, cx);
+    }
 
     log::debug!("resolve_avatars: {} authors need fetch", to_fetch.len());
 
@@ -72,6 +83,7 @@ pub fn resolve_avatars(authors: Vec<(String, String)>, cx: &mut App) {
                         Some(url) => {
                             log::info!("avatar resolved: email={} url={}", email, url);
                             cache.set_resolved(email.clone(), url.clone());
+                            preload_avatar_image(url.clone(), cx);
                         }
                         None => {
                             log::debug!("avatar not found: email={}", email);
@@ -89,6 +101,29 @@ pub fn resolve_avatars(authors: Vec<(String, String)>, cx: &mut App) {
         })
         .detach();
     }
+}
+
+/// Starts loading an avatar's image, and refreshes the windows once it lands.
+///
+/// When an image finishes loading, gpui notifies only the view that first asked
+/// for it. The main panels are cached views, redrawn only when they themselves
+/// are notified, so a graph row whose avatar the detail panel happened to
+/// request first would show initials until something else redrew the graph.
+/// Loading the image here, under the same key `img(url)` uses, and refreshing
+/// when it is ready redraws every view that shows it. A no-op for an image that
+/// has already loaded.
+fn preload_avatar_image(url: String, cx: &mut App) {
+    let resource = Resource::Uri(SharedUri::from(url));
+    let (task, _) = cx.fetch_asset::<ImgResourceLoader>(&resource);
+    if task.clone().now_or_never().is_some() {
+        return;
+    }
+    cx.spawn(async move |cx: &mut AsyncApp| {
+        // A failed load redraws too: the views fall back to initials.
+        let _ = task.await;
+        cx.refresh();
+    })
+    .detach();
 }
 
 /// Drain resolved `(email, url)` pairs from `rx`, debounce briefly to coalesce

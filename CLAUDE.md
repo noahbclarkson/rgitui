@@ -49,7 +49,7 @@ Example flow: `GraphView` emits `CommitSelected(oid)` → `subscribe_graph` spaw
 ### Rendering crates
 
 - `rgitui_diff` (`src/lib.rs`): `DiffViewer` receives a `FileDiff` via `set_diff`; precomputes rows per `DiffDisplayMode` (Unified/SideBySide/ThreeWay) into a virtualized list; LRU display cache; syntect highlighting in a process-wide `OnceLock`, with `similar`-based intra-line word-diff merged on top. Emits stage/unstage hunk/line request events back to the workspace.
-- `rgitui_graph` (`src/lib.rs`): `GraphView` renders lane layout computed in `rgitui_git::compute_graph` (`src/graph.rs`); rows in a `uniform_list`, edges/nodes drawn with `gpui::canvas` + `PathBuilder` using precomputed trig tables.
+- `rgitui_graph` (`src/lib.rs`): `GraphView` renders lane layout computed in `rgitui_git::compute_graph` (`src/graph.rs`); rows in a `uniform_list`, drawn per row with `gpui::canvas`. Straight lanes, dots and rings are quads (`paint_vertical_lane`, `src/paint.rs`); only curves use `PathBuilder`, and nothing a row paints may leave its bounds. Each separate run of paths costs gpui a full-window MSAA render pass, and painting into a neighbouring row chains draw order down the list so runs stop merging — together these made the graph GPU-bound on integrated GPUs.
 
 ### UI, theme, settings, AI
 

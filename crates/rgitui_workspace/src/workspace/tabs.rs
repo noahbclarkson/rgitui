@@ -168,7 +168,7 @@ impl Workspace {
             graph.update(cx, |g, cx| {
                 g.set_commits(commits, cx);
                 g.set_head_detached(head_detached, cx);
-                g.set_all_loaded(!has_more);
+                g.set_all_loaded(!has_more, cx);
                 g.set_worktree_statuses(worktree_graph_infos, cx);
             });
 
