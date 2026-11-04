@@ -1,5 +1,6 @@
 #[cfg(feature = "perf")]
 mod heap_size;
+mod paint;
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -12,10 +13,10 @@ use std::time::Duration;
 use gpui::prelude::*;
 use gpui::{
     canvas, div, img, linear_color_stop, linear_gradient, point, px, uniform_list, Animation,
-    AnimationExt, App, Background, Bounds, ClickEvent, ContentMask, Context, CursorStyle,
-    ElementId, Entity, EventEmitter, FocusHandle, ListSizingBehavior, MouseButton, MouseDownEvent,
-    MouseMoveEvent, ObjectFit, PathBuilder, Pixels, Point, Render, ScrollStrategy, SharedString,
-    Size, UniformListScrollHandle, WeakEntity, Window,
+    AnimationExt, App, Background, BorderStyle, Bounds, ClickEvent, ContentMask, Context,
+    CursorStyle, ElementId, Entity, EventEmitter, FocusHandle, ListSizingBehavior, MouseButton,
+    MouseDownEvent, MouseMoveEvent, ObjectFit, PathBuilder, Pixels, Point, Render, ScrollStrategy,
+    SharedString, Size, UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{
     compact_ref_labels, compute_graph, CommitInfo, FileChangeKind, GraphEdge, GraphRow, RefLabel,
@@ -233,21 +234,16 @@ fn edge_reaches_column(edge: &GraphEdge, column_width: f32) -> bool {
     lane_center_x(edge.from_lane.min(edge.to_lane)) - GRAPH_EDGE_STROKE / 2.0 < column_width
 }
 
-/// The content mask that keeps a graph cell's painting inside its column.
+/// The content mask that keeps a graph cell's painting inside its cell.
 ///
-/// Only the sides are clipped: lines deliberately run a few pixels past the
-/// top and bottom of their row to join the rows above and below seamlessly.
+/// The top and bottom are clipped as well as the sides. Lines used to run a few
+/// pixels into the neighbouring rows to join them, but anything a row paints
+/// past its bounds chains gpui's draw order onto the next row, which stops the
+/// curves of different rows sharing a render pass (see `paint`). Lanes are
+/// unrounded quads, which the shader does not antialias, so lane segments in
+/// adjacent rows meet without a seam and need no overlap.
 fn graph_cell_mask(bounds: Bounds<Pixels>) -> ContentMask<Pixels> {
-    let overdraw = px(8.0);
-    ContentMask {
-        bounds: Bounds::from_corners(
-            point(bounds.origin.x, bounds.origin.y - overdraw),
-            point(
-                bounds.origin.x + bounds.size.width,
-                bounds.origin.y + bounds.size.height + overdraw,
-            ),
-        ),
-    }
+    ContentMask { bounds }
 }
 
 /// Which dot a commit gets when no avatar is drawn over it.
@@ -278,13 +274,16 @@ fn paint_node_dot(
         NodeKind::Merge => Some((radius + 2.5, px(1.5), 0.6)),
         NodeKind::Normal => None,
     };
+    paint::paint_disc(window, center, px(radius), color);
     if let Some((halo_radius, stroke, alpha)) = halo {
-        if let Some(built) = build_stroked_circle(center.x, center.y, halo_radius, stroke) {
-            window.paint_path(built, gpui::Hsla { a: alpha, ..color });
-        }
-    }
-    if let Some(built) = build_filled_circle(center.x, center.y, radius) {
-        window.paint_path(built, color);
+        paint::paint_ring(
+            window,
+            center,
+            px(halo_radius),
+            stroke,
+            gpui::Hsla { a: alpha, ..color },
+            BorderStyle::Solid,
+        );
     }
 }
 
@@ -511,64 +510,6 @@ fn menu_items_for_selection(selected_commits: usize) -> Vec<&'static GraphMenuIt
         .iter()
         .filter(|item| squashable || item.action != GraphMenuAction::SquashSelected)
         .collect()
-}
-
-/// Pre-computed unit circle vertex offsets (cos, sin) for 36-step circles.
-/// Computed once and reused across all frames to avoid per-frame trig calls.
-fn unit_circle_offsets() -> &'static [(f32, f32)] {
-    use std::sync::OnceLock;
-    static OFFSETS: OnceLock<Vec<(f32, f32)>> = OnceLock::new();
-    OFFSETS.get_or_init(|| {
-        let steps = 36_usize;
-        (0..=steps)
-            .map(|s| {
-                let angle = (s as f32) * std::f32::consts::TAU / (steps as f32);
-                (angle.cos(), angle.sin())
-            })
-            .collect()
-    })
-}
-
-/// Build a filled circle path from pre-computed unit circle offsets.
-fn build_filled_circle(cx_x: Pixels, cy_y: Pixels, radius: f32) -> Option<gpui::Path<Pixels>> {
-    let offsets = unit_circle_offsets();
-    let mut path = PathBuilder::fill();
-    for (i, &(cos, sin)) in offsets.iter().enumerate() {
-        // Skip the last (duplicate of first, only needed for stroke closure)
-        if i >= 36 {
-            break;
-        }
-        let x = cx_x + px(radius * cos);
-        let y = cy_y + px(radius * sin);
-        if i == 0 {
-            path.move_to(point(x, y));
-        } else {
-            path.line_to(point(x, y));
-        }
-    }
-    path.close();
-    path.build().ok()
-}
-
-/// Build a stroked circle path from pre-computed unit circle offsets.
-fn build_stroked_circle(
-    cx_x: Pixels,
-    cy_y: Pixels,
-    radius: f32,
-    stroke_width: Pixels,
-) -> Option<gpui::Path<Pixels>> {
-    let offsets = unit_circle_offsets();
-    let mut path = PathBuilder::stroke(stroke_width);
-    for (i, &(cos, sin)) in offsets.iter().enumerate() {
-        let x = cx_x + px(radius * cos);
-        let y = cy_y + px(radius * sin);
-        if i == 0 {
-            path.move_to(point(x, y));
-        } else {
-            path.line_to(point(x, y));
-        }
-    }
-    path.build().ok()
 }
 
 /// Pre-computed quarter-circle arc offsets (sin, 1-cos) for 12-segment arcs.
@@ -1310,8 +1251,9 @@ impl GraphView {
     }
 
     /// Mark that all available commits have been loaded (disables "load more").
-    pub fn set_all_loaded(&mut self, loaded: bool) {
+    pub fn set_all_loaded(&mut self, loaded: bool, cx: &mut Context<Self>) {
         self.all_commits_loaded = loaded;
+        cx.notify();
     }
 
     /// Record whether HEAD is detached. Checking out a commit a branch already
@@ -2895,26 +2837,13 @@ impl Render for GraphView {
                                                 // 1. Approach segment: incoming line from row above → dot center.
                                                 // A pinned node isn't on its lane, so it has none.
                                                 if has_incoming && !node_pinned {
-                                                    // When a worktree row sits immediately above this commit,
-                                                    // start at the row top so the branch line doesn't paint
-                                                    // over the worktree connector above it.
-                                                    let approach_top = if has_virtual_parent_above {
-                                                        origin.y
-                                                    } else {
-                                                        origin.y - px(4.0)
-                                                    };
-                                                    let mut approach = PathBuilder::stroke(px(2.0));
-                                                    approach.move_to(point(
+                                                    paint_vertical_lane(
+                                                        window,
                                                         origin.x + node_x_px,
-                                                        approach_top,
-                                                    ));
-                                                    approach.line_to(point(
-                                                        origin.x + node_x_px,
+                                                        origin.y,
                                                         origin.y + mid_y,
-                                                    ));
-                                                    if let Ok(built) = approach.build() {
-                                                        window.paint_path(built, node_color);
-                                                    }
+                                                        node_color,
+                                                    );
                                                 }
 
                                                 // 2. Draw all edges (pass-throughs + outgoing from dot).
@@ -2940,9 +2869,9 @@ impl Render for GraphView {
                                                     let start_y = if edge.from_lane == node_lane {
                                                         origin.y + mid_y
                                                     } else {
-                                                        origin.y - px(4.0)
+                                                        origin.y
                                                     };
-                                                    let end_y = origin.y + h + px(4.0);
+                                                    let end_y = origin.y + h;
 
                                                     if from_x == to_x {
                                                         paint_vertical_lane(
@@ -3039,9 +2968,7 @@ impl Render for GraphView {
                                                 let cy_y = origin.y + mid_y;
                                                 // Background ring to occlude lines passing behind the dot
                                                 let ring_r = 14.0_f32 * compact_mul;
-                                                if let Some(built_ring) = build_filled_circle(cx_x, cy_y, ring_r) {
-                                                    window.paint_path(built_ring, row_bg_for_canvas);
-                                                }
+                                                paint::paint_disc(window, point(cx_x, cy_y), px(ring_r), row_bg_for_canvas);
 
                                                 // An avatar covers the dot entirely, and a dimmed
                                                 // one would let it show through.
@@ -4213,8 +4140,8 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                                         paint_vertical_lane(
                                             window,
                                             origin.x + px(lane_x),
-                                            origin.y - px(4.0),
-                                            origin.y + h + px(4.0),
+                                            origin.y,
+                                            origin.y + h,
                                             color,
                                         );
                                     }
@@ -4225,13 +4152,24 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                                     if let Some(parent_lane) = parent_lane {
                                         let parent_lane_x = lane_center_x(parent_lane);
                                         let parent_x = origin.x + px(parent_lane_x);
-                                        let end_y = origin.y + h + px(4.0);
-                                        let mut path = PathBuilder::stroke(px(2.0));
+                                        let end_y = origin.y + h;
+                                        let background: Background = if graph_clipped {
+                                            clipped_line_background(
+                                                node_color,
+                                                node_x,
+                                                parent_lane_x,
+                                                graph_width,
+                                            )
+                                        } else {
+                                            node_color.into()
+                                        };
 
                                         if parent_x == cx_x {
-                                            path.move_to(point(cx_x, cy_y));
-                                            path.line_to(point(parent_x, end_y));
+                                            paint_vertical_lane(
+                                                window, cx_x, cy_y, end_y, background,
+                                            );
                                         } else {
+                                            let mut path = PathBuilder::stroke(px(2.0));
                                             match graph_style {
                                                 GraphStyle::Curved => {
                                                     let available = end_y - cy_y;
@@ -4271,85 +4209,42 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                                                     path.line_to(point(parent_x, end_y));
                                                 }
                                             }
-                                        }
 
-                                        if let Ok(built) = path.build() {
-                                            let background: Background = if graph_clipped {
-                                                clipped_line_background(
-                                                    node_color,
-                                                    node_x,
-                                                    parent_lane_x,
-                                                    graph_width,
-                                                )
-                                            } else {
-                                                node_color.into()
-                                            };
-                                            window.paint_path(built, background);
+                                            if let Ok(built) = path.build() {
+                                                window.paint_path(built, background);
+                                            }
                                         }
                                     }
 
-                                    // Background ring to occlude lines behind the dot
+                                    let center = point(cx_x, cy_y);
+                                    // Background disc to occlude lines behind the dot
                                     let ring_r = 13.0_f32 * compact_mul;
-                                    let steps = 32_usize;
-                                    let mut ring = PathBuilder::fill();
-                                    for s in 0..steps {
-                                        let angle =
-                                            (s as f32) * std::f32::consts::TAU / (steps as f32);
-                                        let x = cx_x + px(ring_r * angle.cos());
-                                        let y = cy_y + px(ring_r * angle.sin());
-                                        if s == 0 {
-                                            ring.move_to(point(x, y));
-                                        } else {
-                                            ring.line_to(point(x, y));
-                                        }
-                                    }
-                                    ring.close();
-                                    if let Ok(built_ring) = ring.build() {
-                                        window.paint_path(built_ring, panel_bg);
-                                    }
+                                    paint::paint_disc(window, center, px(ring_r), panel_bg);
 
                                     // Hollow circle (stroke only, no fill) to distinguish from commits
                                     let dot_radius = 5.0_f32 * compact_mul;
-                                    let mut circle = PathBuilder::stroke(px(2.0));
-                                    for s in 0..=steps {
-                                        let angle =
-                                            (s as f32) * std::f32::consts::TAU / (steps as f32);
-                                        let x = cx_x + px(dot_radius * angle.cos());
-                                        let y = cy_y + px(dot_radius * angle.sin());
-                                        if s == 0 {
-                                            circle.move_to(point(x, y));
-                                        } else {
-                                            circle.line_to(point(x, y));
-                                        }
-                                    }
-                                    if let Ok(built_circle) = circle.build() {
-                                        window.paint_path(built_circle, node_color);
-                                    }
+                                    paint::paint_ring(
+                                        window,
+                                        center,
+                                        px(dot_radius),
+                                        px(2.0),
+                                        node_color,
+                                        BorderStyle::Solid,
+                                    );
 
                                     // Dashed outer ring to further distinguish
                                     let outer_r = dot_radius + 3.0 * compact_mul;
-                                    let dash_count = 8_usize;
-                                    let arc_per_dash =
-                                        std::f32::consts::TAU / (dash_count as f32 * 2.0);
-                                    for d in 0..dash_count {
-                                        let start_angle =
-                                            d as f32 * std::f32::consts::TAU / dash_count as f32;
-                                        let end_angle = start_angle + arc_per_dash;
-                                        let mut dash = PathBuilder::stroke(px(1.5));
-                                        let sx = cx_x + px(outer_r * start_angle.cos());
-                                        let sy = cy_y + px(outer_r * start_angle.sin());
-                                        dash.move_to(point(sx, sy));
-                                        let ex = cx_x + px(outer_r * end_angle.cos());
-                                        let ey = cy_y + px(outer_r * end_angle.sin());
-                                        dash.line_to(point(ex, ey));
-                                        if let Ok(built_dash) = dash.build() {
-                                            let dash_color = gpui::Hsla {
-                                                a: 0.6,
-                                                ..node_color
-                                            };
-                                            window.paint_path(built_dash, dash_color);
-                                        }
-                                    }
+                                    paint::paint_ring(
+                                        window,
+                                        center,
+                                        px(outer_r),
+                                        px(1.5),
+                                        gpui::Hsla {
+                                            a: 0.6,
+                                            ..node_color
+                                        },
+                                        BorderStyle::Dashed,
+                                    );
 
                                     if node_pinned {
                                         paint_pinned_marker(window, point(cx_x, cy_y), node_color);
