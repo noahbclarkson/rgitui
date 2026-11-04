@@ -171,6 +171,7 @@ In `crates/rgitui_perf/scenarios/`:
 | `panel-tour` | Opens every heavyweight view once, census after each. |
 | `staging-churn` | Dirties the tree, then stage/unstage cycles — cache *invalidation*. |
 | `scroll-storm` | Continuous wheel scrolling. The only scenario that draws long enough for draw p95/p99 to mean anything. |
+| `hover-sweep` | The pointer swept over the sidebar, the graph rows and the window at 120Hz. Every row it crosses flips a hover state, so this is what measures hover feedback. |
 | `key-repeat-degradation` | A held arrow key at 30Hz, timed in blocks of 100, to see whether block eight costs what block one did. |
 | `idle` | Fifteen seconds of nothing. Any frame drawn here is one too many. |
 | `startup-warm` | Second launch, with the caches the first one left. |
@@ -183,6 +184,7 @@ A scenario is a JSON list of steps:
 { "action":   { "action": "graph::GraphSelectNext", "repeat": 500, "settle": "frame" } }
 { "key":      { "key": "ctrl-shift-p" } }
 { "scroll":   { "x": 400, "y": 300, "delta_y": -120, "repeat": 100 } }
+{ "hover":    { "from_x": 400, "from_y": 130, "to_x": 400, "to_y": 215, "steps": 120 } }
 { "dirty":    { "count": 40 } }
 { "wait_for": { "condition": "operation_idle", "timeout_ms": 30000 } }
 { "snapshot": { "snapshot": "after-scroll" } }
@@ -222,8 +224,8 @@ than to a whole run.
 Mouse steps address the window by coordinate, so they are reproducible at a
 fixed window size but are **not** independent of layout: move a panel and a
 recorded click lands somewhere else. Keystrokes and actions carry the weight of
-a scenario for that reason; mouse steps exist mainly for scroll, which has no
-keyboard equivalent exercising the same path.
+a scenario for that reason; mouse steps exist mainly for scroll and hover,
+which have no keyboard equivalent exercising the same path.
 
 ## The corpus
 

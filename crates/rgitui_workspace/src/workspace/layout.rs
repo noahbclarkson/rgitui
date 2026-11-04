@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{
     canvas, div, px, App, ClickEvent, Context, CursorStyle, DragMoveEvent, ElementId, MouseButton,
-    MouseDownEvent, Render, SharedString, Window,
+    MouseDownEvent, Render, SharedString, StyleRefinement, Window,
 };
 use rgitui_git::GitOperationState;
 use rgitui_i18n::{t, tp};
@@ -866,7 +866,7 @@ impl Render for Workspace {
                             .when(sidebar_focused, |el| {
                                 el.border_t_2().border_color(focus_accent)
                             })
-                            .child(active_tab.sidebar.clone())
+                            .child(active_tab.sidebar.clone().cached(fill_container()))
                             // Resize handle straddles the right border
                             .child(
                                 div()
@@ -947,7 +947,7 @@ impl Render for Workspace {
                                         .when(graph_focused, |el| {
                                             el.border_t_2().border_color(focus_accent)
                                         })
-                                        .child(active_tab.graph.clone()),
+                                        .child(active_tab.graph.clone().cached(fill_container())),
                                 )
                                 .child(
                                     div()
@@ -1223,7 +1223,12 @@ impl Render for Workspace {
                                     })
                                     .child(tab_bar)
                                     .when(bottom_panel_mode == BottomPanelMode::Diff, |el| {
-                                        el.child(active_tab.diff_viewer.clone())
+                                        el.child(
+                                            active_tab
+                                                .diff_viewer
+                                                .clone()
+                                                .cached(fill_rest_of_column()),
+                                        )
                                     })
                                     .when(bottom_panel_mode == BottomPanelMode::Blame, |el| {
                                         el.child(active_tab.blame_view.clone())
@@ -1472,7 +1477,14 @@ impl Render for Workspace {
                                     })
                                     .when(
                                         active_tab.right_panel_mode == RightPanelMode::Details,
-                                        |el| el.child(active_tab.detail_panel.clone()),
+                                        |el| {
+                                            el.child(
+                                                active_tab
+                                                    .detail_panel
+                                                    .clone()
+                                                    .cached(fill_container()),
+                                            )
+                                        },
                                     )
                                     .when(
                                         active_tab.right_panel_mode == RightPanelMode::Issues,
@@ -1524,10 +1536,9 @@ impl Render for Workspace {
                             })
                             // Commit panel at bottom
                             .child(
-                                div()
-                                    .h(px(commit_input_height))
-                                    .flex_shrink_0()
-                                    .child(active_tab.commit_panel.clone()),
+                                div().h(px(commit_input_height)).flex_shrink_0().child(
+                                    active_tab.commit_panel.clone().cached(fill_container()),
+                                ),
                             )
                             // Width resize handle on left edge
                             .child(
@@ -3008,4 +3019,26 @@ mod head_display_name_tests {
     fn nothing_known_still_says_detached() {
         assert_eq!(head_display_name(None, None), "detached");
     }
+}
+
+// The main panels are embedded as cached views: gpui reuses a panel's last
+// layout and paint until that panel is notified, so a hover or selection in one
+// panel no longer re-renders, re-lays-out and re-paints every other. Without
+// it, every frame rebuilt the whole window and taffy's layout pass alone was
+// around a third of the main thread's frame time.
+//
+// A cached view is laid out from the style given here rather than measured
+// from its contents, so each one sits in a container that already decides its
+// size. Panels must `cx.notify()` whenever what they render changes, which
+// gpui then propagates; globals they read are covered by
+// `Workspace::_appearance_subscriptions`.
+
+/// A panel filling the container the workspace sized for it.
+fn fill_container() -> StyleRefinement {
+    StyleRefinement::default().size_full()
+}
+
+/// A panel taking the rest of a column below a header.
+fn fill_rest_of_column() -> StyleRefinement {
+    StyleRefinement::default().flex_1().min_h_0().w_full()
 }

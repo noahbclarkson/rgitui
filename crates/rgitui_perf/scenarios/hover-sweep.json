@@ -1,0 +1,28 @@
+{
+  "name": "hover-sweep",
+  "description": "Sweeps the pointer up and down the sidebar, back and forth over the graph rows, then diagonally across the whole window, as mouse-move events at 120Hz. Every row boundary it crosses flips a hover state and forces a redraw, which is the path that made hover feedback trail the pointer by 50-150ms. Coordinates are window positions laid out for the default window, so like every mouse scenario it measures the same thing only at the same window size.",
+  "corpus": "medium",
+  "start_from": "cold",
+  "steps": [
+    { "wait_for": { "condition": "operation_idle", "timeout_ms": 120000 } },
+    { "hover": { "from_x": 10.0, "from_y": 10.0, "to_x": 120.0, "to_y": 130.0, "steps": 10 } },
+
+    { "mark": { "mark": "hover-sidebar" } },
+    { "hover": { "from_x": 120.0, "from_y": 130.0, "to_x": 120.0, "to_y": 460.0, "steps": 240, "settle": { "rate": { "hz": 120.0 } } } },
+    { "hover": { "from_x": 120.0, "from_y": 460.0, "to_x": 120.0, "to_y": 130.0, "steps": 240, "settle": { "rate": { "hz": 120.0 } } } },
+    { "end_mark": { "mark": "hover-sidebar" } },
+
+    { "mark": { "mark": "hover-graph" } },
+    { "hover": { "from_x": 120.0, "from_y": 130.0, "to_x": 400.0, "to_y": 130.0, "steps": 60, "settle": { "rate": { "hz": 120.0 } } } },
+    { "hover": { "from_x": 400.0, "from_y": 130.0, "to_x": 400.0, "to_y": 215.0, "steps": 120, "settle": { "rate": { "hz": 120.0 } } } },
+    { "hover": { "from_x": 400.0, "from_y": 215.0, "to_x": 400.0, "to_y": 130.0, "steps": 120, "settle": { "rate": { "hz": 120.0 } } } },
+    { "hover": { "from_x": 400.0, "from_y": 130.0, "to_x": 400.0, "to_y": 215.0, "steps": 120, "settle": { "rate": { "hz": 120.0 } } } },
+    { "hover": { "from_x": 400.0, "from_y": 215.0, "to_x": 400.0, "to_y": 130.0, "steps": 120, "settle": { "rate": { "hz": 120.0 } } } },
+    { "end_mark": { "mark": "hover-graph" } },
+
+    { "mark": { "mark": "hover-diagonal" } },
+    { "hover": { "from_x": 400.0, "from_y": 130.0, "to_x": 900.0, "to_y": 480.0, "steps": 240, "settle": { "rate": { "hz": 120.0 } } } },
+    { "hover": { "from_x": 900.0, "from_y": 480.0, "to_x": 20.0, "to_y": 100.0, "steps": 240, "settle": { "rate": { "hz": 120.0 } } } },
+    { "end_mark": { "mark": "hover-diagonal" } }
+  ]
+}
