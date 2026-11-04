@@ -256,6 +256,10 @@ pub struct AppSettings {
     pub author_column_width: f32,
     #[serde(default = "default_date_column_width")]
     pub date_column_width: f32,
+    /// Widest the commit graph column may grow, in pixels. The column fits the
+    /// lanes on screen up to this width and clips anything further right.
+    #[serde(default = "default_graph_column_max_width")]
+    pub graph_column_max_width: f32,
     #[serde(default)]
     pub auto_fetch_interval: AutoFetchInterval,
     #[serde(default = "default_confirm_destructive")]
@@ -331,6 +335,12 @@ fn default_author_column_width() -> f32 {
 
 fn default_date_column_width() -> f32 {
     100.0
+}
+
+/// Room for twelve lanes, matching the graph column's own sizing: one lane of
+/// slack plus the left padding.
+fn default_graph_column_max_width() -> f32 {
+    270.0
 }
 
 fn default_confirm_destructive() -> bool {
@@ -790,6 +800,7 @@ impl Default for AppSettings {
             show_subject_column: default_show_subject_column(),
             author_column_width: default_author_column_width(),
             date_column_width: default_date_column_width(),
+            graph_column_max_width: default_graph_column_max_width(),
             auto_fetch_interval: AutoFetchInterval::default(),
             confirm_destructive_operations: default_confirm_destructive(),
             auto_check_updates: default_auto_check_updates(),

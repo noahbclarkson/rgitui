@@ -562,6 +562,7 @@ english_messages! {
     "graph.pending_changes" => "Pending changes",
     "graph.pending_on" => "Pending changes on {branch}",
     "graph.pending_on_detached" => "Pending changes on detached HEAD",
+    "graph.resize_hint" => "Drag to set how wide the graph can grow",
     "graph.search.placeholder" => "Search commits...",
     "graph.signed" => "✓ Signed",
     "graph.title" => "Graph",

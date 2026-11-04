@@ -507,6 +507,7 @@
     "graph.pending_changes": "待提交的更改",
     "graph.pending_on": "{branch} 上的待提交更改",
     "graph.pending_on_detached": "已分离的 HEAD 上的待提交更改",
+    "graph.resize_hint": "拖动以设置提交图的最大宽度",
     "graph.search.placeholder": "搜索提交…",
     "graph.signed": "✓ 已签名",
     "graph.title": "提交图",

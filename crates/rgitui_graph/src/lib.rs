@@ -1,18 +1,21 @@
 #[cfg(feature = "perf")]
 mod heap_size;
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, img, point, px, uniform_list, Animation, AnimationExt, App, Bounds, ClickEvent,
-    Context, CursorStyle, ElementId, Entity, EventEmitter, FocusHandle, ListSizingBehavior,
-    MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, PathBuilder, Pixels, Point, Render,
-    ScrollStrategy, SharedString, Size, UniformListScrollHandle, WeakEntity, Window,
+    canvas, div, img, linear_color_stop, linear_gradient, point, px, uniform_list, Animation,
+    AnimationExt, App, Background, Bounds, ClickEvent, ContentMask, Context, CursorStyle,
+    ElementId, Entity, EventEmitter, FocusHandle, ListSizingBehavior, MouseButton, MouseDownEvent,
+    MouseMoveEvent, ObjectFit, PathBuilder, Pixels, Point, Render, ScrollStrategy, SharedString,
+    Size, UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{
     compact_ref_labels, compute_graph, CommitInfo, FileChangeKind, GraphEdge, GraphRow, RefLabel,
@@ -37,6 +40,280 @@ pub struct DateColumnResize;
 impl Render for DateColumnResize {
     fn render(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
+    }
+}
+
+#[derive(Clone)]
+pub struct GraphColumnResize;
+impl Render for GraphColumnResize {
+    fn render(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+/// Horizontal distance between neighbouring graph lanes.
+const LANE_WIDTH: f32 = 20.0;
+/// Space between the graph column's left edge and lane 0.
+const GRAPH_PADDING_LEFT: f32 = 10.0;
+/// Narrowest the graph column gets, wide enough for its header label.
+const MIN_GRAPH_COLUMN_WIDTH: f32 = 80.0;
+/// Widest the graph column's cap can be dragged.
+const MAX_GRAPH_COLUMN_WIDTH: f32 = 2000.0;
+/// Space from a row's left edge to the graph column: the 3px marker tab and
+/// the 5px gap after it, matched by the header's 8px left padding.
+const GRAPH_COLUMN_LEFT_INSET: f32 = 8.0;
+/// Narrowest the message column gets squeezed before the graph gives way.
+const MIN_MESSAGE_COLUMN_WIDTH: f32 = 200.0;
+/// What a commit row spends outside its graph, message, author and date
+/// columns: the left inset, the 16px rebase grip, the 80px hash column and the
+/// 52px spacer under the header's two buttons.
+const ROW_FIXED_WIDTH: f32 = GRAPH_COLUMN_LEFT_INSET + 16.0 + 80.0 + 52.0;
+/// How far from the right edge of a clipped graph column lanes start fading.
+const GRAPH_FADE_WIDTH: f32 = 2.0 * LANE_WIDTH;
+/// Thickness of the lines between commits.
+const GRAPH_EDGE_STROKE: f32 = 2.0;
+/// How long the lanes on screen must stay narrower before the column shrinks
+/// to fit them. Growing is immediate; shrinking waits for scrolling to settle
+/// so the columns to the right don't shift back and forth mid-scroll.
+const GRAPH_SHRINK_DELAY: Duration = Duration::from_millis(400);
+
+/// Horizontal centre of `lane` within the graph column.
+fn lane_center_x(lane: usize) -> f32 {
+    lane as f32 * LANE_WIDTH + LANE_WIDTH / 2.0 + GRAPH_PADDING_LEFT
+}
+
+/// How many lanes a commit row draws into: its own active lanes, its node, and
+/// any lane an edge comes in from. A row's `lane_count` alone can be smaller
+/// than the lanes it paints, because a lane that merges in on this row is
+/// already freed by the time the count is taken.
+fn row_lane_extent(row: &GraphRow) -> usize {
+    row.edges
+        .iter()
+        .map(|edge| edge.from_lane.max(edge.to_lane) + 1)
+        .chain([row.lane_count, row.node_lane + 1])
+        .max()
+        .unwrap_or(1)
+}
+
+/// How many lanes the list rows in `range` draw into, worktree rows included.
+fn lanes_in_view(
+    range: Range<usize>,
+    graph_rows: &[GraphRow],
+    virtual_rows_prefix: &[usize],
+    worktree_positions: &[WorktreeRowPosition],
+) -> usize {
+    range
+        .map(|list_index| {
+            if let Some(position) = worktree_positions
+                .iter()
+                .find(|position| position.list_index == list_index)
+            {
+                let head_extent = position
+                    .commit_index
+                    .and_then(|commit_index| graph_rows.get(commit_index))
+                    .map_or(0, row_lane_extent);
+                let parent_extent = position.parent_lane.map_or(0, |lane| lane + 1);
+                return head_extent.max(parent_extent).max(position.node_lane + 1);
+            }
+            let virtual_rows_above = virtual_rows_prefix.get(list_index).copied().unwrap_or(0);
+            graph_rows
+                .get(list_index - virtual_rows_above)
+                .map_or(0, row_lane_extent)
+        })
+        .max()
+        .unwrap_or(0)
+        .max(1)
+}
+
+/// Width the graph column needs to show `lanes` lanes: one lane of slack on
+/// the right for the avatar overhang, plus the left padding.
+fn natural_graph_column_width(lanes: usize) -> f32 {
+    (lanes as f32 + 1.0) * LANE_WIDTH + GRAPH_PADDING_LEFT
+}
+
+/// Width of the graph column: what `lanes` need, never wider than
+/// `max_width` and never narrower than the header label.
+fn graph_column_width(lanes: usize, max_width: f32) -> f32 {
+    natural_graph_column_width(lanes)
+        .min(max_width)
+        .max(MIN_GRAPH_COLUMN_WIDTH)
+}
+
+/// The widest the graph column can be in a panel `panel_width` wide while the
+/// message column keeps its minimum, or `None` before the panel has been laid
+/// out. `author_width` and `date_width` are `None` for hidden columns.
+fn graph_width_budget(
+    panel_width: f32,
+    author_width: Option<f32>,
+    date_width: Option<f32>,
+    show_message: bool,
+) -> Option<f32> {
+    if panel_width <= 0.0 {
+        return None;
+    }
+    // Each column's margins, as laid out in the header and the rows.
+    let author = author_width.map_or(0.0, |width| 12.0 + width);
+    let date = date_width.map_or(0.0, |width| 12.0 + width + 8.0);
+    let message = if show_message {
+        MIN_MESSAGE_COLUMN_WIDTH
+    } else {
+        0.0
+    };
+    Some(panel_width - ROW_FIXED_WIDTH - author - date - message)
+}
+
+/// Where a row's node is drawn, and whether it was pinned there.
+///
+/// A node whose lane is cut off by the column's right edge is drawn at the
+/// last position that still fits it, so the commit stays visible.
+fn node_center_x(lane: usize, column_width: f32) -> (f32, bool) {
+    let x = lane_center_x(lane);
+    let last_x = column_width - LANE_WIDTH;
+    if x > last_x {
+        (last_x, true)
+    } else {
+        (x, false)
+    }
+}
+
+/// Opacity of a line at `x` in a clipped graph column: full away from the
+/// right edge, fading over the last [`GRAPH_FADE_WIDTH`] so the cut reads as
+/// "more to the right" rather than as the graph ending.
+fn clipped_lane_alpha(x: f32, column_width: f32) -> f32 {
+    let fade_start = column_width - GRAPH_FADE_WIDTH;
+    if x <= fade_start {
+        1.0
+    } else {
+        let remaining = (1.0 - (x - fade_start) / GRAPH_FADE_WIDTH).max(0.0);
+        0.25 + 0.75 * remaining
+    }
+}
+
+/// Opacity along a line spanning `from_x` to `to_x` in a clipped graph column,
+/// as `(position, alpha)` stops. Positions run 0.0 to 1.0 across the part of the
+/// line inside the column, left to right, because that is the extent a masked
+/// path's gradient covers.
+fn clipped_line_stops(from_x: f32, to_x: f32, column_width: f32) -> [(f32, f32); 2] {
+    let left = from_x.min(to_x);
+    let right = from_x.max(to_x).min(column_width);
+    let span = right - left;
+    if span <= 0.0 {
+        let alpha = clipped_lane_alpha(left, column_width);
+        return [(0.0, alpha), (1.0, alpha)];
+    }
+    let fade_start = (column_width - GRAPH_FADE_WIDTH).clamp(left, right);
+    [fade_start, right].map(|x| ((x - left) / span, clipped_lane_alpha(x, column_width)))
+}
+
+/// What to paint a line in a clipped graph column with. A path takes one
+/// background, so a line that reaches the fade needs a gradient: an opacity
+/// picked for the whole path would either cut off abruptly at the column's
+/// edge or dim the part still well inside it.
+fn clipped_line_background(
+    color: gpui::Hsla,
+    from_x: f32,
+    to_x: f32,
+    column_width: f32,
+) -> Background {
+    let [(start, start_alpha), (end, end_alpha)] = clipped_line_stops(from_x, to_x, column_width);
+    if start_alpha == end_alpha {
+        return color.opacity(start_alpha).into();
+    }
+    linear_gradient(
+        90.0,
+        linear_color_stop(color.opacity(start_alpha), start),
+        linear_color_stop(color.opacity(end_alpha), end),
+    )
+}
+
+/// Whether any of `edge` lands inside a graph column `column_width` wide. An
+/// edge wholly past the right edge would be built and then masked away, and in
+/// a wide history that is most of a row's edges.
+fn edge_reaches_column(edge: &GraphEdge, column_width: f32) -> bool {
+    lane_center_x(edge.from_lane.min(edge.to_lane)) - GRAPH_EDGE_STROKE / 2.0 < column_width
+}
+
+/// The content mask that keeps a graph cell's painting inside its column.
+///
+/// Only the sides are clipped: lines deliberately run a few pixels past the
+/// top and bottom of their row to join the rows above and below seamlessly.
+fn graph_cell_mask(bounds: Bounds<Pixels>) -> ContentMask<Pixels> {
+    let overdraw = px(8.0);
+    ContentMask {
+        bounds: Bounds::from_corners(
+            point(bounds.origin.x, bounds.origin.y - overdraw),
+            point(
+                bounds.origin.x + bounds.size.width,
+                bounds.origin.y + bounds.size.height + overdraw,
+            ),
+        ),
+    }
+}
+
+/// Which dot a commit gets when no avatar is drawn over it.
+#[derive(Clone, Copy)]
+enum NodeKind {
+    Head,
+    Merge,
+    Normal,
+}
+
+/// Paints a commit's dot: HEAD is larger with a glow, a merge has an outer
+/// ring, and any other commit is a plain filled circle.
+fn paint_node_dot(
+    window: &mut Window,
+    center: Point<Pixels>,
+    kind: NodeKind,
+    scale: f32,
+    color: gpui::Hsla,
+) {
+    let radius = scale
+        * match kind {
+            NodeKind::Head => 5.5,
+            NodeKind::Merge => 5.0,
+            NodeKind::Normal => 4.0,
+        };
+    let halo = match kind {
+        NodeKind::Head => Some((radius + 4.0 * scale, px(2.5), 0.35)),
+        NodeKind::Merge => Some((radius + 2.5, px(1.5), 0.6)),
+        NodeKind::Normal => None,
+    };
+    if let Some((halo_radius, stroke, alpha)) = halo {
+        if let Some(built) = build_stroked_circle(center.x, center.y, halo_radius, stroke) {
+            window.paint_path(built, gpui::Hsla { a: alpha, ..color });
+        }
+    }
+    if let Some(built) = build_filled_circle(center.x, center.y, radius) {
+        window.paint_path(built, color);
+    }
+}
+
+/// Paints a straight stretch of lane. Most of a wide graph is these, and a quad
+/// skips the tessellation and multisampled pass a path goes through.
+fn paint_vertical_lane(
+    window: &mut Window,
+    x: Pixels,
+    top: Pixels,
+    bottom: Pixels,
+    background: impl Into<Background>,
+) {
+    let half_stroke = px(GRAPH_EDGE_STROKE / 2.0);
+    window.paint_quad(gpui::fill(
+        Bounds::from_corners(point(x - half_stroke, top), point(x + half_stroke, bottom)),
+        background,
+    ));
+}
+
+/// A small right-pointing chevron beside a pinned node, marking that the
+/// commit's real lane lies beyond the column's edge.
+fn paint_pinned_marker(window: &mut Window, center: Point<Pixels>, color: gpui::Hsla) {
+    let left = center.x + px(14.0);
+    let mut chevron = PathBuilder::stroke(px(1.5));
+    chevron.move_to(point(left, center.y - px(4.0)));
+    chevron.line_to(point(left + px(4.0), center.y));
+    chevron.line_to(point(left, center.y + px(4.0)));
+    if let Ok(built) = chevron.build() {
+        window.paint_path(built, color);
     }
 }
 
@@ -420,13 +697,16 @@ fn contains_case_insensitive(haystack: &str, lowercase_needle: &str) -> bool {
 /// A worktree is a child of its HEAD commit, not an inline row in an existing
 /// child-to-parent path. It may reuse the HEAD lane only when the HEAD has no
 /// visible incoming child and no earlier worktree has claimed that lane. In
-/// every other case it gets the first lane beyond the commit graph and carries
-/// an explicit edge back to `parent_lane`.
+/// every other case it gets the first lane beyond those its HEAD row draws and
+/// carries an explicit edge back to `parent_lane`.
+///
+/// The side lane is local to the row rather than beyond the whole graph, so a
+/// worktree near the top of a wide history doesn't sit far off to the right of
+/// everything around it.
 fn compute_worktree_row_positions(
     commits: &[CommitInfo],
     graph_rows: &[GraphRow],
     worktree_infos: &[WorktreeGraphInfo],
-    graph_lane_count: usize,
 ) -> Vec<WorktreeRowPosition> {
     let visible_commit_count = commits.len().min(graph_rows.len());
     let mut anchored = Vec::new();
@@ -466,8 +746,8 @@ fn compute_worktree_row_positions(
             .then_with(|| current_b.cmp(&current_a))
     });
 
-    // `graph_lane_count` is a count, so it is also the first unused lane index.
-    let side_lane = graph_lane_count.max(1);
+    // A row's lane extent is a count, so it is also the first lane the row
+    // leaves unused.
     let mut claimed_head_lanes = HashSet::new();
     for (commit_index, position) in &mut anchored {
         let graph_row = &graph_rows[*commit_index];
@@ -478,15 +758,17 @@ fn compute_worktree_row_positions(
         let is_first_worktree_for_head = claimed_head_lanes.insert(*commit_index);
 
         if has_real_incoming || !is_first_worktree_for_head {
+            let side_lane = row_lane_extent(graph_row).max(1);
             position.node_lane = side_lane;
             position.color_index = side_lane;
         }
     }
 
     let mut positions = Vec::with_capacity(anchored.len() + orphan_indices.len());
-    // A worktree with no commit of its own gets a lane to itself, counting out
-    // from the side lane.
-    for (list_index, (lane, worktree_idx)) in (side_lane..).zip(orphan_indices).enumerate() {
+    // A worktree with no commit of its own sits above the first commit, with
+    // a lane to itself counting out from the lanes that commit draws.
+    let orphan_side_lane = graph_rows.first().map_or(1, row_lane_extent).max(1);
+    for (list_index, (lane, worktree_idx)) in (orphan_side_lane..).zip(orphan_indices).enumerate() {
         positions.push(WorktreeRowPosition {
             worktree_idx,
             list_index,
@@ -735,7 +1017,15 @@ impl CommitSelection {
 pub struct GraphView {
     commits: Arc<Vec<CommitInfo>>,
     graph_rows: Arc<Vec<GraphRow>>,
-    global_max_lane: usize,
+    /// Lanes the graph column is currently sized for.
+    shown_lanes: usize,
+    /// Lanes drawn by the rows on screen, measured by the list each time it
+    /// lays out. Shared with the list's render callback, which runs after
+    /// `render` has returned.
+    lanes_on_screen: Rc<Cell<usize>>,
+    /// Pending shrink of the graph column, replaced while the rows on screen
+    /// keep changing so the column only narrows once scrolling settles.
+    shrink_graph_task: Option<gpui::Task<()>>,
     selected_index: Option<usize>,
     selected_oid: Option<git2::Oid>,
     /// Every selected commit. The cursor (`selected_index`) is the member that
@@ -826,7 +1116,9 @@ impl GraphView {
         Self {
             commits: Arc::new(Vec::new()),
             graph_rows: Arc::new(Vec::new()),
-            global_max_lane: 0,
+            shown_lanes: 1,
+            lanes_on_screen: Rc::new(Cell::new(1)),
+            shrink_graph_task: None,
             selected_index: None,
             selected_oid: None,
             selection: CommitSelection::default(),
@@ -950,18 +1242,11 @@ impl GraphView {
                     .and_then(|commit_index| this.commits.get(commit_index))
                     .map(|commit| commit.oid);
 
-                this.global_max_lane = graph_rows
-                    .iter()
-                    .map(|r| r.lane_count)
-                    .max()
-                    .unwrap_or(1)
-                    .max(1);
                 this.commits = commits_for_apply;
                 this.graph_rows = Arc::new(graph_rows);
                 log::debug!(
-                    "GraphView: graph rows applied: {} rows, max_lane={}",
-                    this.graph_rows.len(),
-                    this.global_max_lane
+                    "GraphView: graph rows applied: {} rows",
+                    this.graph_rows.len()
                 );
                 this.recompute_worktree_positions();
 
@@ -1103,13 +1388,42 @@ impl GraphView {
         cx.notify();
     }
 
+    /// Resize the graph column for the lanes the rows on screen draw.
+    ///
+    /// Wider takes effect at once so no lane is ever hidden behind a column
+    /// that is still catching up. Narrower waits [`GRAPH_SHRINK_DELAY`] after
+    /// the rows on screen last changed, then fits whatever is on screen then.
+    fn fit_graph_to_lanes(&mut self, lanes: usize, cx: &mut Context<Self>) {
+        match lanes.cmp(&self.shown_lanes) {
+            std::cmp::Ordering::Greater => {
+                self.shown_lanes = lanes;
+                self.shrink_graph_task = None;
+                cx.notify();
+            }
+            std::cmp::Ordering::Equal => {
+                self.shrink_graph_task = None;
+            }
+            std::cmp::Ordering::Less => {
+                self.shrink_graph_task =
+                    Some(cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+                        smol::Timer::after(GRAPH_SHRINK_DELAY).await;
+                        this.update(cx, |this, cx| {
+                            this.shrink_graph_task = None;
+                            let on_screen = this.lanes_on_screen.get();
+                            if on_screen < this.shown_lanes {
+                                this.shown_lanes = on_screen;
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                    }));
+            }
+        }
+    }
+
     fn recompute_worktree_positions(&mut self) {
-        self.worktree_row_positions = compute_worktree_row_positions(
-            &self.commits,
-            &self.graph_rows,
-            &self.worktree_infos,
-            self.global_max_lane,
-        );
+        self.worktree_row_positions =
+            compute_worktree_row_positions(&self.commits, &self.graph_rows, &self.worktree_infos);
         // `compute_worktree_row_positions` returns positions sorted by list index,
         // which is what the mapping helpers rely on.
         self.worktree_rows = self
@@ -1920,22 +2234,10 @@ impl Render for GraphView {
         let has_search_query = self.show_search && !self.search_editor.read(cx).is_empty();
         let has_context_menu = self.context_menu.is_some();
 
-        let lane_width: f32 = 20.0;
-        let graph_padding_left: f32 = 10.0;
         let compactness = cx.global::<SettingsState>().settings().compactness;
         let graph_style = cx.global::<SettingsState>().settings().graph_style;
         let compact_mul = compactness.multiplier();
         let row_height = compactness.spacing(self.row_height);
-        let worktree_max_lane = worktree_row_positions
-            .iter()
-            .map(|position| position.node_lane)
-            .max()
-            .unwrap_or(0);
-        let graph_lane_count = self.global_max_lane.max(worktree_max_lane + 1);
-
-        let graph_col_width =
-            ((graph_lane_count as f32 + 1.0) * lane_width + graph_padding_left).max(80.0);
-
         // Column visibility settings
         let show_author_column = self.show_author_column;
         let show_date_column = self.show_date_column;
@@ -1949,6 +2251,32 @@ impl Render for GraphView {
         let date_col_width = cx.global::<SettingsState>().settings().date_column_width;
         let show_author_email = self.show_author_email;
         let my_commits_active = self.my_commits_active;
+        let author_width = if show_author_email {
+            author_col_width.max(180.0)
+        } else {
+            author_col_width
+        };
+
+        let graph_max_width = cx
+            .global::<SettingsState>()
+            .settings()
+            .graph_column_max_width;
+        // Worktree rows show their summary in a message column even when the
+        // commit rows' one is hidden.
+        let graph_budget = graph_width_budget(
+            f32::from(self.container_bounds.size.width),
+            show_author_column.then_some(author_width),
+            show_date_column.then_some(date_col_width),
+            show_subject_column || !worktree_row_positions.is_empty(),
+        );
+        let graph_col_width = graph_column_width(
+            self.shown_lanes,
+            graph_budget.map_or(graph_max_width, |budget| graph_max_width.min(budget)),
+        );
+        // Lanes past the column's right edge are cut off; the rows fade their
+        // last lanes and pin cut-off nodes to the edge so that reads as such.
+        let graph_clipped = natural_graph_column_width(self.shown_lanes) > graph_col_width;
+        let lanes_on_screen = Rc::clone(&self.lanes_on_screen);
 
         // Header row (not virtualized — always visible)
         let view_settings_toggle = cx.weak_entity();
@@ -1976,6 +2304,16 @@ impl Render for GraphView {
                     cx.notify();
                 },
             ))
+            .on_drag_move::<GraphColumnResize>(cx.listener(
+                |this, e: &gpui::DragMoveEvent<GraphColumnResize>, _, cx| {
+                    let column_left = this.container_bounds.left() + px(GRAPH_COLUMN_LEFT_INSET);
+                    let new_w = f32::from(e.event.position.x - column_left)
+                        .clamp(MIN_GRAPH_COLUMN_WIDTH, MAX_GRAPH_COLUMN_WIDTH);
+                    let settings = cx.global_mut::<SettingsState>();
+                    settings.settings_mut().graph_column_max_width = new_w;
+                    cx.notify();
+                },
+            ))
             .on_drag_move::<DateColumnResize>(cx.listener(
                 move |this, e: &gpui::DragMoveEvent<DateColumnResize>, _, cx| {
                     let settings = cx.global_mut::<SettingsState>();
@@ -1989,22 +2327,46 @@ impl Render for GraphView {
             .when(show_graph_lanes, |el| {
                 el.child(
                     div()
+                        .relative()
                         .w(px(graph_col_width))
+                        .h_full()
                         .flex_shrink_0()
-                        .overflow_hidden()
-                        .h_flex()
-                        .items_center()
-                        .gap(px(4.))
                         .child(
-                            Icon::new(IconName::GitCommit)
-                                .size(IconSize::XSmall)
-                                .color(Color::Muted),
+                            div()
+                                .size_full()
+                                .overflow_hidden()
+                                .h_flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .child(
+                                    Icon::new(IconName::GitCommit)
+                                        .size(IconSize::XSmall)
+                                        .color(Color::Muted),
+                                )
+                                .child(
+                                    Label::new(t!("graph.title"))
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted)
+                                        .weight(gpui::FontWeight::SEMIBOLD),
+                                ),
                         )
                         .child(
-                            Label::new(t!("graph.title"))
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted)
-                                .weight(gpui::FontWeight::SEMIBOLD),
+                            div()
+                                .id("graph-resize-handle")
+                                .absolute()
+                                .top_0()
+                                .right(px(-4.))
+                                .w(px(8.))
+                                .h_full()
+                                .cursor_col_resize()
+                                .tooltip(Tooltip::text(t!("graph.resize_hint")))
+                                .on_drag(GraphColumnResize, |val, _, _, cx| {
+                                    cx.stop_propagation();
+                                    cx.new(|_| val.clone())
+                                })
+                                .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
+                                    cx.stop_propagation()
+                                }),
                         ),
                 )
             })
@@ -2031,11 +2393,6 @@ impl Render for GraphView {
             });
 
         if show_author_column {
-            let author_width = if self.show_author_email {
-                author_col_width.max(180.0)
-            } else {
-                author_col_width
-            };
             header = header.child(
                 div()
                     .relative()
@@ -2211,6 +2568,28 @@ impl Render for GraphView {
             "graph-commit-list",
             total_list_items,
             move |range: Range<usize>, _window: &mut Window, cx: &mut App| {
+                // Measured here rather than in `render` because only the list
+                // knows which rows it is about to show, after any pending
+                // scroll-to-item has been applied. The resize is deferred:
+                // the view can't be invalidated while the window is drawing.
+                // The list also renders item 0 on its own to measure the row
+                // height; that call says nothing about what is on screen.
+                let is_measuring_call = range == (0..1) && total_list_items > 1;
+                if !is_measuring_call {
+                    let lanes = lanes_in_view(
+                        range.clone(),
+                        &graph_rows,
+                        &virtual_rows_prefix,
+                        &worktree_row_positions,
+                    );
+                    if lanes_on_screen.replace(lanes) != lanes {
+                        let view = view.clone();
+                        cx.defer(move |cx| {
+                            view.update(cx, |this, cx| this.fit_graph_to_lanes(lanes, cx))
+                                .ok();
+                        });
+                    }
+                }
                 range
                     .map(|i| {
                         if let Some(position) = worktree_row_positions
@@ -2250,8 +2629,10 @@ impl Render for GraphView {
                             // (to_lane == HEAD's node_lane). In both cases the
                             // source lane is drawn full-height at the worktree row;
                             // any bend happens at the HEAD's row below.
-                            let pass_through_edges =
+                            let mut pass_through_edges =
                                 worktree_pass_through_edges(position, &graph_rows);
+                            pass_through_edges
+                                .retain(|edge| edge_reaches_column(edge, graph_col_width));
 
                             return render_working_tree_row(WorkingTreeRowParams {
                                 list_index: i,
@@ -2266,9 +2647,8 @@ impl Render for GraphView {
                                 is_orphan_worktree: is_orphan,
                                 pass_through_edges,
                                 row_height,
-                                lane_width,
-                                graph_padding_left,
                                 graph_col_width,
+                                graph_clipped,
                                 working_tree_bg: row_bg,
                                 working_tree_border_color: row_border_color,
                                 node_color: row_node_color,
@@ -2282,7 +2662,6 @@ impl Render for GraphView {
                                 show_date_column,
                                 author_col_width,
                                 date_col_width,
-                                show_absolute_dates,
                                 show_graph_lanes,
                                 compact_mul,
                                 has_context_menu,
@@ -2327,7 +2706,7 @@ impl Render for GraphView {
 
                         let graph_width = graph_col_width;
                         let node_lane = graph_row.node_lane;
-                        let node_x = node_lane as f32 * lane_width + lane_width / 2.0 + graph_padding_left;
+                        let (node_x, node_pinned) = node_center_x(node_lane, graph_width);
 
                         let node_color = rgitui_theme::lane_color(graph_row.node_color);
                         let has_virtual_parent_above = worktree_targets_commit_immediately_above(
@@ -2406,8 +2785,13 @@ impl Render for GraphView {
                             format_relative_time(&commit.time, now_utc)
                         };
 
-                        // Clone only the edges vec for canvas closure (not the entire GraphRow)
-                        let edges: Vec<GraphEdge> = graph_row.edges.clone();
+                        // Clone only the edges the canvas can show (not the entire GraphRow)
+                        let edges: Vec<GraphEdge> = graph_row
+                            .edges
+                            .iter()
+                            .filter(|edge| edge_reaches_column(edge, graph_col_width))
+                            .cloned()
+                            .collect();
                         let row_bg_for_canvas = bg;
 
                         let view_clone = view.clone();
@@ -2502,208 +2886,180 @@ impl Render for GraphView {
                                               _: (),
                                               window: &mut Window,
                                               _cx: &mut App| {
-                                            let origin = bounds.origin;
-                                            let h = bounds.size.height;
-                                            let mid_y = px(row_height / 2.0);
-                                            let node_x_px = px(node_x);
+                                            window.with_content_mask(Some(graph_cell_mask(bounds)), |window| {
+                                                let origin = bounds.origin;
+                                                let h = bounds.size.height;
+                                                let mid_y = px(row_height / 2.0);
+                                                let node_x_px = px(node_x);
 
-                                            // 1. Approach segment: incoming line from row above → dot center.
-                                            if has_incoming {
-                                                // When a worktree row sits immediately above this commit,
-                                                // start at the row top so the branch line doesn't paint
-                                                // over the worktree connector above it.
-                                                let approach_top = if has_virtual_parent_above {
-                                                    origin.y
-                                                } else {
-                                                    origin.y - px(4.0)
-                                                };
-                                                let mut approach = PathBuilder::stroke(px(2.0));
-                                                approach.move_to(point(
-                                                    origin.x + node_x_px,
-                                                    approach_top,
-                                                ));
-                                                approach.line_to(point(
-                                                    origin.x + node_x_px,
-                                                    origin.y + mid_y,
-                                                ));
-                                                if let Ok(built) = approach.build() {
-                                                    window.paint_path(built, node_color);
-                                                }
-                                            }
-
-                                            // 2. Draw all edges (pass-throughs + outgoing from dot).
-                                            for edge in &edges {
-                                                let from_x = px(
-                                                    edge.from_lane as f32 * lane_width
-                                                        + lane_width / 2.0
-                                                        + graph_padding_left,
-                                                );
-                                                let to_x = px(
-                                                    edge.to_lane as f32 * lane_width
-                                                        + lane_width / 2.0
-                                                        + graph_padding_left,
-                                                );
-                                                let color =
-                                                    rgitui_theme::lane_color(edge.color_index);
-
-                                                let start_y = if edge.from_lane == node_lane {
-                                                    origin.y + mid_y
-                                                } else {
-                                                    origin.y - px(4.0)
-                                                };
-                                                let end_y = origin.y + h + px(4.0);
-
-                                                let stroke_width = px(2.0);
-
-                                                let edge_color = if edge.is_merge {
-                                                    gpui::Hsla { a: 0.85, ..color }
-                                                } else {
-                                                    color
-                                                };
-
-                                                let mut path = PathBuilder::stroke(stroke_width);
-
-                                                if from_x == to_x {
-                                                    path.move_to(point(
-                                                        origin.x + from_x,
-                                                        start_y,
+                                                // 1. Approach segment: incoming line from row above → dot center.
+                                                // A pinned node isn't on its lane, so it has none.
+                                                if has_incoming && !node_pinned {
+                                                    // When a worktree row sits immediately above this commit,
+                                                    // start at the row top so the branch line doesn't paint
+                                                    // over the worktree connector above it.
+                                                    let approach_top = if has_virtual_parent_above {
+                                                        origin.y
+                                                    } else {
+                                                        origin.y - px(4.0)
+                                                    };
+                                                    let mut approach = PathBuilder::stroke(px(2.0));
+                                                    approach.move_to(point(
+                                                        origin.x + node_x_px,
+                                                        approach_top,
                                                     ));
-                                                    path.line_to(point(
-                                                        origin.x + to_x,
-                                                        end_y,
+                                                    approach.line_to(point(
+                                                        origin.x + node_x_px,
+                                                        origin.y + mid_y,
                                                     ));
-                                                } else if edge.from_lane != node_lane {
-                                                    // Merge-in edge: comes from a different lane
-                                                    // above and converges into the node. Curve
-                                                    // starts vertical (continuing the branch line
-                                                    // from above) then bends horizontally toward
-                                                    // the node.
-                                                    let fx = origin.x + from_x;
-                                                    let tx = origin.x + to_x;
-                                                    let horiz_y = origin.y + mid_y;
-
-                                                    match graph_style {
-                                                        GraphStyle::Curved => {
-                                                            let ry = (horiz_y - start_y).max(px(1.0));
-                                                            let rx = (from_x - to_x).abs().max(px(1.0));
-                                                            let dir = if tx < fx { -1.0_f32 } else { 1.0_f32 };
-
-                                                            path.move_to(point(fx, start_y));
-
-                                                            for &(sin_a, one_minus_cos) in quarter_arc_offsets() {
-                                                                let px_x = fx + rx * dir * one_minus_cos;
-                                                                let px_y = start_y + ry * sin_a;
-                                                                path.line_to(point(px_x, px_y));
-                                                            }
-                                                        }
-                                                        GraphStyle::Rails => {
-                                                            path.move_to(point(fx, start_y));
-                                                            path.line_to(point(fx, horiz_y));
-                                                            path.line_to(point(tx, horiz_y));
-                                                        }
-                                                        GraphStyle::Angular => {
-                                                            path.move_to(point(fx, start_y));
-                                                            path.line_to(point(fx, horiz_y));
-                                                            path.line_to(point(tx, horiz_y));
-                                                        }
-                                                    }
-                                                } else {
-                                                    let fx = origin.x + from_x;
-                                                    let tx = origin.x + to_x;
-                                                    let horiz_y = origin.y + mid_y;
-
-                                                    match graph_style {
-                                                        GraphStyle::Curved => {
-                                                            let avail = end_y - horiz_y;
-                                                            let r = avail.min(px(16.0)).max(px(1.0));
-                                                            let dir = if tx < fx { -1.0_f32 } else { 1.0_f32 };
-
-                                                            path.move_to(point(fx, horiz_y));
-                                                            let horiz_end_x = tx - r * dir;
-                                                            path.line_to(point(horiz_end_x, horiz_y));
-
-                                                            for &(sin_a, one_minus_cos) in quarter_arc_offsets() {
-                                                                let arc_x = horiz_end_x + r * dir * sin_a;
-                                                                let arc_y = horiz_y + r * one_minus_cos;
-                                                                path.line_to(point(arc_x, arc_y));
-                                                            }
-
-                                                            path.line_to(point(tx, end_y));
-                                                        }
-                                                        GraphStyle::Rails => {
-                                                            path.move_to(point(fx, horiz_y));
-                                                            let mid_point_y = horiz_y + (end_y - horiz_y) / 2.0;
-                                                            path.line_to(point(fx, mid_point_y));
-                                                            path.line_to(point(tx, mid_point_y));
-                                                            path.line_to(point(tx, end_y));
-                                                        }
-                                                        GraphStyle::Angular => {
-                                                            path.move_to(point(fx, horiz_y));
-                                                            path.line_to(point(tx, horiz_y));
-                                                            path.line_to(point(tx, end_y));
-                                                        }
+                                                    if let Ok(built) = approach.build() {
+                                                        window.paint_path(built, node_color);
                                                     }
                                                 }
 
-                                                if let Ok(built_path) = path.build() {
-                                                    window.paint_path(built_path, edge_color);
-                                                }
-                                            }
-
-                                            // Node dot: HEAD=larger filled, merge=filled+ring, normal=filled
-                                            let dot_radius = if is_head_row {
-                                                5.5_f32 * compact_mul
-                                            } else if is_merge_commit {
-                                                5.0_f32 * compact_mul
-                                            } else {
-                                                4.0_f32 * compact_mul
-                                            };
-                                            let cx_x = origin.x + node_x_px;
-                                            let cy_y = origin.y + mid_y;
-                                            // Background ring to occlude lines passing behind the dot
-                                            let ring_r = 14.0_f32 * compact_mul;
-                                            if let Some(built_ring) = build_filled_circle(cx_x, cy_y, ring_r) {
-                                                window.paint_path(built_ring, row_bg_for_canvas);
-                                            }
-
-                                            // HEAD commit: glow ring + filled circle
-                                            if is_head_row {
-                                                let glow_r = dot_radius + 4.0 * compact_mul;
-                                                if let Some(built_glow) = build_stroked_circle(cx_x, cy_y, glow_r, px(2.5)) {
-                                                    let glow_color = gpui::Hsla {
-                                                        a: 0.35,
-                                                        ..node_color
+                                                // 2. Draw all edges (pass-throughs + outgoing from dot).
+                                                for edge in &edges {
+                                                    let from_x = px(lane_center_x(edge.from_lane));
+                                                    let to_x = px(lane_center_x(edge.to_lane));
+                                                    let mut color =
+                                                        rgitui_theme::lane_color(edge.color_index);
+                                                    if edge.is_merge {
+                                                        color.a *= 0.85;
+                                                    }
+                                                    let edge_background: Background = if graph_clipped {
+                                                        clipped_line_background(
+                                                            color,
+                                                            f32::from(from_x),
+                                                            f32::from(to_x),
+                                                            graph_width,
+                                                        )
+                                                    } else {
+                                                        color.into()
                                                     };
-                                                    window.paint_path(built_glow, glow_color);
-                                                }
 
-                                                // Filled circle for HEAD
-                                                if let Some(built_head) = build_filled_circle(cx_x, cy_y, dot_radius) {
-                                                    window.paint_path(built_head, node_color);
-                                                }
-                                            } else if is_merge_commit {
-                                                // Merge commit: filled circle with outer ring
-                                                if let Some(built_merge) = build_filled_circle(cx_x, cy_y, dot_radius) {
-                                                    window.paint_path(built_merge, node_color);
-                                                }
-
-                                                let outer_r = dot_radius + 2.5;
-                                                if let Some(built_merge) = build_stroked_circle(cx_x, cy_y, outer_r, px(1.5)) {
-                                                    let merge_ring_color = gpui::Hsla {
-                                                        a: 0.6,
-                                                        ..node_color
+                                                    let start_y = if edge.from_lane == node_lane {
+                                                        origin.y + mid_y
+                                                    } else {
+                                                        origin.y - px(4.0)
                                                     };
-                                                    window.paint_path(
-                                                        built_merge,
-                                                        merge_ring_color,
-                                                    );
+                                                    let end_y = origin.y + h + px(4.0);
+
+                                                    if from_x == to_x {
+                                                        paint_vertical_lane(
+                                                            window,
+                                                            origin.x + from_x,
+                                                            start_y,
+                                                            end_y,
+                                                            edge_background,
+                                                        );
+                                                        continue;
+                                                    }
+
+                                                    let mut path = PathBuilder::stroke(px(GRAPH_EDGE_STROKE));
+
+                                                    if edge.from_lane != node_lane {
+                                                        // Merge-in edge: comes from a different lane
+                                                        // above and converges into the node. Curve
+                                                        // starts vertical (continuing the branch line
+                                                        // from above) then bends horizontally toward
+                                                        // the node.
+                                                        let fx = origin.x + from_x;
+                                                        let tx = origin.x + to_x;
+                                                        let horiz_y = origin.y + mid_y;
+
+                                                        match graph_style {
+                                                            GraphStyle::Curved => {
+                                                                let ry = (horiz_y - start_y).max(px(1.0));
+                                                                let rx = (from_x - to_x).abs().max(px(1.0));
+                                                                let dir = if tx < fx { -1.0_f32 } else { 1.0_f32 };
+
+                                                                path.move_to(point(fx, start_y));
+
+                                                                for &(sin_a, one_minus_cos) in quarter_arc_offsets() {
+                                                                    let px_x = fx + rx * dir * one_minus_cos;
+                                                                    let px_y = start_y + ry * sin_a;
+                                                                    path.line_to(point(px_x, px_y));
+                                                                }
+                                                            }
+                                                            GraphStyle::Rails => {
+                                                                path.move_to(point(fx, start_y));
+                                                                path.line_to(point(fx, horiz_y));
+                                                                path.line_to(point(tx, horiz_y));
+                                                            }
+                                                            GraphStyle::Angular => {
+                                                                path.move_to(point(fx, start_y));
+                                                                path.line_to(point(fx, horiz_y));
+                                                                path.line_to(point(tx, horiz_y));
+                                                            }
+                                                        }
+                                                    } else {
+                                                        let fx = origin.x + from_x;
+                                                        let tx = origin.x + to_x;
+                                                        let horiz_y = origin.y + mid_y;
+
+                                                        match graph_style {
+                                                            GraphStyle::Curved => {
+                                                                let avail = end_y - horiz_y;
+                                                                let r = avail.min(px(16.0)).max(px(1.0));
+                                                                let dir = if tx < fx { -1.0_f32 } else { 1.0_f32 };
+
+                                                                path.move_to(point(fx, horiz_y));
+                                                                let horiz_end_x = tx - r * dir;
+                                                                path.line_to(point(horiz_end_x, horiz_y));
+
+                                                                for &(sin_a, one_minus_cos) in quarter_arc_offsets() {
+                                                                    let arc_x = horiz_end_x + r * dir * sin_a;
+                                                                    let arc_y = horiz_y + r * one_minus_cos;
+                                                                    path.line_to(point(arc_x, arc_y));
+                                                                }
+
+                                                                path.line_to(point(tx, end_y));
+                                                            }
+                                                            GraphStyle::Rails => {
+                                                                path.move_to(point(fx, horiz_y));
+                                                                let mid_point_y = horiz_y + (end_y - horiz_y) / 2.0;
+                                                                path.line_to(point(fx, mid_point_y));
+                                                                path.line_to(point(tx, mid_point_y));
+                                                                path.line_to(point(tx, end_y));
+                                                            }
+                                                            GraphStyle::Angular => {
+                                                                path.move_to(point(fx, horiz_y));
+                                                                path.line_to(point(tx, horiz_y));
+                                                                path.line_to(point(tx, end_y));
+                                                            }
+                                                        }
+                                                    }
+
+                                                    if let Ok(built_path) = path.build() {
+                                                        window.paint_path(built_path, edge_background);
+                                                    }
                                                 }
-                                            } else {
-                                                // Normal commit: filled circle
-                                                if let Some(built_normal) = build_filled_circle(cx_x, cy_y, dot_radius) {
-                                                    window.paint_path(built_normal, node_color);
+
+                                                let cx_x = origin.x + node_x_px;
+                                                let cy_y = origin.y + mid_y;
+                                                // Background ring to occlude lines passing behind the dot
+                                                let ring_r = 14.0_f32 * compact_mul;
+                                                if let Some(built_ring) = build_filled_circle(cx_x, cy_y, ring_r) {
+                                                    window.paint_path(built_ring, row_bg_for_canvas);
                                                 }
-                                            }
+
+                                                // An avatar covers the dot entirely, and a dimmed
+                                                // one would let it show through.
+                                                if !show_avatars {
+                                                    let kind = if is_head_row {
+                                                        NodeKind::Head
+                                                    } else if is_merge_commit {
+                                                        NodeKind::Merge
+                                                    } else {
+                                                        NodeKind::Normal
+                                                    };
+                                                    paint_node_dot(window, point(cx_x, cy_y), kind, compact_mul, node_color);
+                                                }
+
+                                                if node_pinned {
+                                                    paint_pinned_marker(window, point(cx_x, cy_y), node_color);
+                                                }
+                                            });
                                         },
                                     )
                                     .size_full(),
@@ -2724,6 +3080,7 @@ impl Render for GraphView {
                                         .top(px((row_height - avatar_size) / 2.0))
                                         .w(px(avatar_size))
                                         .h(px(avatar_size))
+                                        .when(node_pinned, |el| el.opacity(0.7))
                                         .rounded_full()
                                         .overflow_hidden()
                                         .bg(panel_bg)
@@ -2867,7 +3224,7 @@ impl Render for GraphView {
                             row = row.child(
                                 div()
                                     .id(ElementId::NamedInteger("graph-author".into(), i as u64))
-                                    .w(px(if show_author_email { author_col_width.max(180.) } else { author_col_width }))
+                                    .w(px(author_width))
                                     .flex_shrink_0()
                                     .ml(px(12.))
                                     .px(px(4.))
@@ -2927,11 +3284,23 @@ impl Render for GraphView {
             {
                 let view_bounds = view_bounds.clone();
                 move |bounds: Bounds<Pixels>, _: &mut Window, cx: &mut App| {
-                    view_bounds
+                    let width_changed = view_bounds
                         .update(cx, |this: &mut GraphView, _| {
+                            let width_changed =
+                                this.container_bounds.size.width != bounds.size.width;
                             this.container_bounds = bounds;
+                            width_changed
                         })
-                        .ok();
+                        .unwrap_or(false);
+                    // The graph column's width budget is read from these
+                    // bounds, so a new panel width needs another render.
+                    // Deferred: the view can't be invalidated mid-draw.
+                    if width_changed {
+                        let view_bounds = view_bounds.clone();
+                        cx.defer(move |cx| {
+                            view_bounds.update(cx, |_, cx| cx.notify()).ok();
+                        });
+                    }
                 }
             },
             |_, _, _, _| {},
@@ -3642,9 +4011,9 @@ struct WorkingTreeRowParams {
     is_orphan_worktree: bool,
     pass_through_edges: Vec<GraphEdge>,
     row_height: f32,
-    lane_width: f32,
-    graph_padding_left: f32,
     graph_col_width: f32,
+    /// Whether lanes run past the graph column's right edge.
+    graph_clipped: bool,
     working_tree_bg: gpui::Hsla,
     working_tree_border_color: gpui::Hsla,
     node_color: gpui::Hsla,
@@ -3658,8 +4027,6 @@ struct WorkingTreeRowParams {
     show_date_column: bool,
     author_col_width: f32,
     date_col_width: f32,
-    #[allow(dead_code)]
-    show_absolute_dates: bool,
     show_graph_lanes: bool,
     compact_mul: f32,
     has_context_menu: bool,
@@ -3685,9 +4052,8 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
         is_orphan_worktree,
         pass_through_edges,
         row_height,
-        lane_width,
-        graph_padding_left,
         graph_col_width,
+        graph_clipped,
         working_tree_bg,
         working_tree_border_color,
         node_color,
@@ -3701,7 +4067,6 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
         show_date_column,
         author_col_width,
         date_col_width,
-        show_absolute_dates: _,
         show_graph_lanes,
         compact_mul,
         has_context_menu,
@@ -3758,7 +4123,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
         .unwrap_or(0);
 
     let graph_width = graph_col_width;
-    let node_x = node_lane as f32 * lane_width + lane_width / 2.0 + graph_padding_left;
+    let (node_x, node_pinned) = node_center_x(node_lane, graph_width);
     // A detached HEAD has no branch to name, but saying so beats saying nothing:
     // the row would otherwise read identically to a worktree whose branch simply
     // failed to load.
@@ -3831,145 +4196,165 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                                   _: (),
                                   window: &mut Window,
                                   _cx: &mut App| {
-                                let origin = bounds.origin;
-                                let h = bounds.size.height;
-                                let mid_y = px(row_height / 2.0);
-                                let node_x_px = px(node_x);
-                                let cx_x = origin.x + node_x_px;
-                                let cy_y = origin.y + mid_y;
+                                window.with_content_mask(Some(graph_cell_mask(bounds)), |window| {
+                                    let origin = bounds.origin;
+                                    let h = bounds.size.height;
+                                    let mid_y = px(row_height / 2.0);
+                                    let node_x_px = px(node_x);
+                                    let cx_x = origin.x + node_x_px;
+                                    let cy_y = origin.y + mid_y;
 
-                                for edge in &pass_through_edges {
-                                    let lane_x = px(edge.from_lane as f32 * lane_width
-                                        + lane_width / 2.0
-                                        + graph_padding_left);
-                                    let mut pass = PathBuilder::stroke(px(2.0));
-                                    pass.move_to(point(origin.x + lane_x, origin.y - px(4.0)));
-                                    pass.line_to(point(origin.x + lane_x, origin.y + h + px(4.0)));
-                                    if let Ok(built) = pass.build() {
-                                        window.paint_path(
-                                            built,
-                                            rgitui_theme::lane_color(edge.color_index),
+                                    for edge in &pass_through_edges {
+                                        let lane_x = lane_center_x(edge.from_lane);
+                                        let mut color = rgitui_theme::lane_color(edge.color_index);
+                                        if graph_clipped {
+                                            color.a *= clipped_lane_alpha(lane_x, graph_width);
+                                        }
+                                        paint_vertical_lane(
+                                            window,
+                                            origin.x + px(lane_x),
+                                            origin.y - px(4.0),
+                                            origin.y + h + px(4.0),
+                                            color,
                                         );
                                     }
-                                }
 
-                                // A pending-changes node is a graph tip with one
-                                // explicit parent: the worktree's visible HEAD.
-                                // Orphan rows intentionally have no dangling edge.
-                                if let Some(parent_lane) = parent_lane {
-                                    let parent_x = origin.x
-                                        + px(parent_lane as f32 * lane_width
-                                            + lane_width / 2.0
-                                            + graph_padding_left);
-                                    let end_y = origin.y + h + px(4.0);
-                                    let mut path = PathBuilder::stroke(px(2.0));
+                                    // A pending-changes node is a graph tip with one
+                                    // explicit parent: the worktree's visible HEAD.
+                                    // Orphan rows intentionally have no dangling edge.
+                                    if let Some(parent_lane) = parent_lane {
+                                        let parent_lane_x = lane_center_x(parent_lane);
+                                        let parent_x = origin.x + px(parent_lane_x);
+                                        let end_y = origin.y + h + px(4.0);
+                                        let mut path = PathBuilder::stroke(px(2.0));
 
-                                    if parent_x == cx_x {
-                                        path.move_to(point(cx_x, cy_y));
-                                        path.line_to(point(parent_x, end_y));
-                                    } else {
-                                        match graph_style {
-                                            GraphStyle::Curved => {
-                                                let available = end_y - cy_y;
-                                                let radius = available.min(px(16.0)).max(px(1.0));
-                                                let direction = if parent_x < cx_x {
-                                                    -1.0_f32
-                                                } else {
-                                                    1.0_f32
-                                                };
-                                                let horizontal_end = parent_x - radius * direction;
+                                        if parent_x == cx_x {
+                                            path.move_to(point(cx_x, cy_y));
+                                            path.line_to(point(parent_x, end_y));
+                                        } else {
+                                            match graph_style {
+                                                GraphStyle::Curved => {
+                                                    let available = end_y - cy_y;
+                                                    let radius =
+                                                        available.min(px(16.0)).max(px(1.0));
+                                                    let direction = if parent_x < cx_x {
+                                                        -1.0_f32
+                                                    } else {
+                                                        1.0_f32
+                                                    };
+                                                    let horizontal_end =
+                                                        parent_x - radius * direction;
 
-                                                path.move_to(point(cx_x, cy_y));
-                                                path.line_to(point(horizontal_end, cy_y));
-                                                for &(sin_a, one_minus_cos) in quarter_arc_offsets()
-                                                {
-                                                    path.line_to(point(
-                                                        horizontal_end + radius * direction * sin_a,
-                                                        cy_y + radius * one_minus_cos,
-                                                    ));
+                                                    path.move_to(point(cx_x, cy_y));
+                                                    path.line_to(point(horizontal_end, cy_y));
+                                                    for &(sin_a, one_minus_cos) in
+                                                        quarter_arc_offsets()
+                                                    {
+                                                        path.line_to(point(
+                                                            horizontal_end
+                                                                + radius * direction * sin_a,
+                                                            cy_y + radius * one_minus_cos,
+                                                        ));
+                                                    }
+                                                    path.line_to(point(parent_x, end_y));
                                                 }
-                                                path.line_to(point(parent_x, end_y));
+                                                GraphStyle::Rails => {
+                                                    let middle_y = cy_y + (end_y - cy_y) / 2.0;
+                                                    path.move_to(point(cx_x, cy_y));
+                                                    path.line_to(point(cx_x, middle_y));
+                                                    path.line_to(point(parent_x, middle_y));
+                                                    path.line_to(point(parent_x, end_y));
+                                                }
+                                                GraphStyle::Angular => {
+                                                    path.move_to(point(cx_x, cy_y));
+                                                    path.line_to(point(parent_x, cy_y));
+                                                    path.line_to(point(parent_x, end_y));
+                                                }
                                             }
-                                            GraphStyle::Rails => {
-                                                let middle_y = cy_y + (end_y - cy_y) / 2.0;
-                                                path.move_to(point(cx_x, cy_y));
-                                                path.line_to(point(cx_x, middle_y));
-                                                path.line_to(point(parent_x, middle_y));
-                                                path.line_to(point(parent_x, end_y));
-                                            }
-                                            GraphStyle::Angular => {
-                                                path.move_to(point(cx_x, cy_y));
-                                                path.line_to(point(parent_x, cy_y));
-                                                path.line_to(point(parent_x, end_y));
-                                            }
+                                        }
+
+                                        if let Ok(built) = path.build() {
+                                            let background: Background = if graph_clipped {
+                                                clipped_line_background(
+                                                    node_color,
+                                                    node_x,
+                                                    parent_lane_x,
+                                                    graph_width,
+                                                )
+                                            } else {
+                                                node_color.into()
+                                            };
+                                            window.paint_path(built, background);
                                         }
                                     }
 
-                                    if let Ok(built) = path.build() {
-                                        window.paint_path(built, node_color);
+                                    // Background ring to occlude lines behind the dot
+                                    let ring_r = 13.0_f32 * compact_mul;
+                                    let steps = 32_usize;
+                                    let mut ring = PathBuilder::fill();
+                                    for s in 0..steps {
+                                        let angle =
+                                            (s as f32) * std::f32::consts::TAU / (steps as f32);
+                                        let x = cx_x + px(ring_r * angle.cos());
+                                        let y = cy_y + px(ring_r * angle.sin());
+                                        if s == 0 {
+                                            ring.move_to(point(x, y));
+                                        } else {
+                                            ring.line_to(point(x, y));
+                                        }
                                     }
-                                }
+                                    ring.close();
+                                    if let Ok(built_ring) = ring.build() {
+                                        window.paint_path(built_ring, panel_bg);
+                                    }
 
-                                // Background ring to occlude lines behind the dot
-                                let ring_r = 13.0_f32 * compact_mul;
-                                let steps = 32_usize;
-                                let mut ring = PathBuilder::fill();
-                                for s in 0..steps {
-                                    let angle = (s as f32) * std::f32::consts::TAU / (steps as f32);
-                                    let x = cx_x + px(ring_r * angle.cos());
-                                    let y = cy_y + px(ring_r * angle.sin());
-                                    if s == 0 {
-                                        ring.move_to(point(x, y));
-                                    } else {
-                                        ring.line_to(point(x, y));
+                                    // Hollow circle (stroke only, no fill) to distinguish from commits
+                                    let dot_radius = 5.0_f32 * compact_mul;
+                                    let mut circle = PathBuilder::stroke(px(2.0));
+                                    for s in 0..=steps {
+                                        let angle =
+                                            (s as f32) * std::f32::consts::TAU / (steps as f32);
+                                        let x = cx_x + px(dot_radius * angle.cos());
+                                        let y = cy_y + px(dot_radius * angle.sin());
+                                        if s == 0 {
+                                            circle.move_to(point(x, y));
+                                        } else {
+                                            circle.line_to(point(x, y));
+                                        }
                                     }
-                                }
-                                ring.close();
-                                if let Ok(built_ring) = ring.build() {
-                                    window.paint_path(built_ring, panel_bg);
-                                }
+                                    if let Ok(built_circle) = circle.build() {
+                                        window.paint_path(built_circle, node_color);
+                                    }
 
-                                // Hollow circle (stroke only, no fill) to distinguish from commits
-                                let dot_radius = 5.0_f32 * compact_mul;
-                                let mut circle = PathBuilder::stroke(px(2.0));
-                                for s in 0..=steps {
-                                    let angle = (s as f32) * std::f32::consts::TAU / (steps as f32);
-                                    let x = cx_x + px(dot_radius * angle.cos());
-                                    let y = cy_y + px(dot_radius * angle.sin());
-                                    if s == 0 {
-                                        circle.move_to(point(x, y));
-                                    } else {
-                                        circle.line_to(point(x, y));
+                                    // Dashed outer ring to further distinguish
+                                    let outer_r = dot_radius + 3.0 * compact_mul;
+                                    let dash_count = 8_usize;
+                                    let arc_per_dash =
+                                        std::f32::consts::TAU / (dash_count as f32 * 2.0);
+                                    for d in 0..dash_count {
+                                        let start_angle =
+                                            d as f32 * std::f32::consts::TAU / dash_count as f32;
+                                        let end_angle = start_angle + arc_per_dash;
+                                        let mut dash = PathBuilder::stroke(px(1.5));
+                                        let sx = cx_x + px(outer_r * start_angle.cos());
+                                        let sy = cy_y + px(outer_r * start_angle.sin());
+                                        dash.move_to(point(sx, sy));
+                                        let ex = cx_x + px(outer_r * end_angle.cos());
+                                        let ey = cy_y + px(outer_r * end_angle.sin());
+                                        dash.line_to(point(ex, ey));
+                                        if let Ok(built_dash) = dash.build() {
+                                            let dash_color = gpui::Hsla {
+                                                a: 0.6,
+                                                ..node_color
+                                            };
+                                            window.paint_path(built_dash, dash_color);
+                                        }
                                     }
-                                }
-                                if let Ok(built_circle) = circle.build() {
-                                    window.paint_path(built_circle, node_color);
-                                }
 
-                                // Dashed outer ring to further distinguish
-                                let outer_r = dot_radius + 3.0 * compact_mul;
-                                let dash_count = 8_usize;
-                                let arc_per_dash =
-                                    std::f32::consts::TAU / (dash_count as f32 * 2.0);
-                                for d in 0..dash_count {
-                                    let start_angle =
-                                        d as f32 * std::f32::consts::TAU / dash_count as f32;
-                                    let end_angle = start_angle + arc_per_dash;
-                                    let mut dash = PathBuilder::stroke(px(1.5));
-                                    let sx = cx_x + px(outer_r * start_angle.cos());
-                                    let sy = cy_y + px(outer_r * start_angle.sin());
-                                    dash.move_to(point(sx, sy));
-                                    let ex = cx_x + px(outer_r * end_angle.cos());
-                                    let ey = cy_y + px(outer_r * end_angle.sin());
-                                    dash.line_to(point(ex, ey));
-                                    if let Ok(built_dash) = dash.build() {
-                                        let dash_color = gpui::Hsla {
-                                            a: 0.6,
-                                            ..node_color
-                                        };
-                                        window.paint_path(built_dash, dash_color);
+                                    if node_pinned {
+                                        paint_pinned_marker(window, point(cx_x, cy_y), node_color);
                                     }
-                                }
+                                });
                             },
                         )
                         .size_full(),
@@ -4307,10 +4692,6 @@ mod tests {
         }
     }
 
-    fn graph_lane_count(rows: &[GraphRow]) -> usize {
-        rows.iter().map(|row| row.lane_count).max().unwrap_or(1)
-    }
-
     fn make_file_status(kind: FileChangeKind) -> FileStatus {
         FileStatus {
             path: PathBuf::from("file.txt"),
@@ -4319,6 +4700,243 @@ mod tests {
             additions: 0,
             deletions: 0,
         }
+    }
+
+    /// A linear `main` on top (20 → 19 → 18, HEAD at 19) whose history further
+    /// down fans out into four concurrent two-commit side branches off commit 1.
+    fn linear_top_wide_bottom() -> Vec<CommitInfo> {
+        vec![
+            make_commit(20, &[19], vec![RefLabel::LocalBranch("main".into())]),
+            make_commit(19, &[18], vec![RefLabel::Head]),
+            make_commit(18, &[1], Vec::new()),
+            make_commit(30, &[40], vec![RefLabel::LocalBranch("a".into())]),
+            make_commit(31, &[41], vec![RefLabel::LocalBranch("b".into())]),
+            make_commit(32, &[42], vec![RefLabel::LocalBranch("c".into())]),
+            make_commit(33, &[43], vec![RefLabel::LocalBranch("d".into())]),
+            make_commit(40, &[1], Vec::new()),
+            make_commit(41, &[1], Vec::new()),
+            make_commit(42, &[1], Vec::new()),
+            make_commit(43, &[1], Vec::new()),
+            make_commit(1, &[], Vec::new()),
+        ]
+    }
+
+    #[test]
+    fn a_row_counts_the_lanes_its_edges_come_in_from() {
+        // The lane merging in on this row was freed before `lane_count` was
+        // taken, but the row still paints it.
+        let row = GraphRow {
+            commit_index: 0,
+            node_lane: 0,
+            edges: vec![GraphEdge {
+                from_lane: 3,
+                to_lane: 0,
+                color_index: 0,
+                is_merge: false,
+            }],
+            lane_count: 1,
+            node_color: 0,
+            has_incoming: true,
+            is_head: false,
+            is_merge: false,
+        };
+        assert_eq!(row_lane_extent(&row), 4);
+    }
+
+    #[test]
+    fn lanes_in_view_only_counts_the_rows_on_screen() {
+        let commits = linear_top_wide_bottom();
+        let graph_rows = compute_graph(&commits);
+        let no_virtual_rows = vec![0; graph_rows.len()];
+
+        assert_eq!(lanes_in_view(0..3, &graph_rows, &no_virtual_rows, &[]), 1);
+        assert!(lanes_in_view(0..graph_rows.len(), &graph_rows, &no_virtual_rows, &[]) >= 5);
+    }
+
+    #[test]
+    fn lanes_in_view_counts_a_worktree_rows_lane() {
+        let commits = linear_top_wide_bottom();
+        let graph_rows = compute_graph(&commits);
+        let worktrees = vec![dirty_worktree("main", Some(make_oid(19)), true)];
+        let positions = compute_worktree_row_positions(&commits, &graph_rows, &worktrees);
+        let worktree_row = positions[0].list_index;
+        let mut virtual_rows_prefix = vec![0; graph_rows.len() + 1];
+        for prefix in virtual_rows_prefix.iter_mut().skip(worktree_row + 1) {
+            *prefix = 1;
+        }
+
+        assert_eq!(
+            lanes_in_view(
+                worktree_row..worktree_row + 1,
+                &graph_rows,
+                &virtual_rows_prefix,
+                &positions
+            ),
+            positions[0].node_lane + 1
+        );
+    }
+
+    #[test]
+    fn a_worktree_side_lane_sits_beside_its_own_row_not_the_whole_graph() {
+        let commits = linear_top_wide_bottom();
+        let graph_rows = compute_graph(&commits);
+        let widest = graph_rows.iter().map(row_lane_extent).max().unwrap();
+        let worktrees = vec![dirty_worktree("main", Some(make_oid(19)), true)];
+        let positions = compute_worktree_row_positions(&commits, &graph_rows, &worktrees);
+
+        // HEAD (19) has a child above it, so its worktree takes a side lane:
+        // the first one past the lanes HEAD's row draws.
+        assert_eq!(positions[0].node_lane, row_lane_extent(&graph_rows[1]));
+        assert_eq!(positions[0].node_lane, 1);
+        assert!(positions[0].node_lane < widest);
+    }
+
+    #[test]
+    fn the_graph_column_fits_its_lanes_within_the_cap() {
+        assert_eq!(graph_column_width(1, 270.0), MIN_GRAPH_COLUMN_WIDTH);
+        assert_eq!(graph_column_width(5, 270.0), natural_graph_column_width(5));
+        assert_eq!(graph_column_width(50, 270.0), 270.0);
+        // A cap below the minimum still leaves room for the header label.
+        assert_eq!(graph_column_width(50, 10.0), MIN_GRAPH_COLUMN_WIDTH);
+    }
+
+    #[test]
+    fn the_graph_leaves_the_message_column_its_minimum() {
+        let panel = 1000.0;
+        let budget = graph_width_budget(panel, Some(140.0), Some(100.0), true).unwrap();
+        let author = 12.0 + 140.0;
+        let date = 12.0 + 100.0 + 8.0;
+        assert_eq!(
+            panel - ROW_FIXED_WIDTH - author - date - budget,
+            MIN_MESSAGE_COLUMN_WIDTH
+        );
+
+        // Hiding columns frees their space for the graph.
+        let roomier = graph_width_budget(panel, None, None, true).unwrap();
+        assert_eq!(roomier, budget + author + date);
+        assert_eq!(
+            graph_width_budget(panel, None, None, false).unwrap(),
+            roomier + MIN_MESSAGE_COLUMN_WIDTH
+        );
+
+        // A narrow panel still gets a usable, if clipped, graph column.
+        let cramped = graph_width_budget(400.0, Some(140.0), Some(100.0), true).unwrap();
+        assert_eq!(graph_column_width(30, cramped), MIN_GRAPH_COLUMN_WIDTH);
+
+        assert_eq!(
+            graph_width_budget(0.0, Some(140.0), Some(100.0), true),
+            None
+        );
+    }
+
+    #[test]
+    fn nodes_are_pinned_only_when_their_lane_is_cut_off() {
+        for lanes in 1..40 {
+            let width = graph_column_width(lanes, MAX_GRAPH_COLUMN_WIDTH);
+            for lane in 0..lanes {
+                assert_eq!(
+                    node_center_x(lane, width),
+                    (lane_center_x(lane), false),
+                    "lane {lane} of {lanes} fits its natural width"
+                );
+            }
+        }
+
+        let width = graph_column_width(50, 270.0);
+        let (x, pinned) = node_center_x(40, width);
+        assert!(pinned);
+        assert_eq!(x, width - LANE_WIDTH);
+    }
+
+    #[test]
+    fn clipped_lanes_fade_toward_the_right_edge() {
+        let width = 270.0;
+        assert_eq!(clipped_lane_alpha(lane_center_x(0), width), 1.0);
+        assert_eq!(clipped_lane_alpha(width - GRAPH_FADE_WIDTH, width), 1.0);
+
+        let near = clipped_lane_alpha(width - GRAPH_FADE_WIDTH / 2.0, width);
+        let edge = clipped_lane_alpha(width, width);
+        assert!(near < 1.0 && edge < near);
+        assert_eq!(edge, 0.25);
+        assert_eq!(clipped_lane_alpha(width + 100.0, width), 0.25);
+    }
+
+    #[test]
+    fn an_edge_crossing_the_clipped_edge_fades_across_its_visible_part() {
+        let width = 270.0;
+        let fade_start = width - GRAPH_FADE_WIDTH;
+
+        // From a visible lane to one past the edge, in either direction: full
+        // opacity until the fade, faint where the mask cuts it.
+        for (from_x, to_x) in [(30.0, 500.0), (500.0, 30.0)] {
+            let [(start, start_alpha), (end, end_alpha)] = clipped_line_stops(from_x, to_x, width);
+            assert_eq!(start_alpha, 1.0);
+            assert_eq!(end_alpha, 0.25);
+            assert_eq!(start, (fade_start - 30.0) / (width - 30.0));
+            assert_eq!(end, 1.0);
+        }
+
+        // Starting inside the fade, it picks up at the opacity found there.
+        let inside = fade_start + GRAPH_FADE_WIDTH / 2.0;
+        let [(start, start_alpha), (end, end_alpha)] = clipped_line_stops(inside, 500.0, width);
+        assert_eq!(start, 0.0);
+        assert_eq!(start_alpha, clipped_lane_alpha(inside, width));
+        assert_eq!(end, 1.0);
+        assert_eq!(end_alpha, 0.25);
+    }
+
+    #[test]
+    fn an_edge_short_of_the_fade_or_straight_has_one_opacity() {
+        let width = 270.0;
+
+        let [(_, start_alpha), (_, end_alpha)] = clipped_line_stops(30.0, 100.0, width);
+        assert_eq!((start_alpha, end_alpha), (1.0, 1.0));
+
+        let straight = width - GRAPH_FADE_WIDTH / 2.0;
+        let [(_, start_alpha), (_, end_alpha)] = clipped_line_stops(straight, straight, width);
+        assert_eq!(start_alpha, end_alpha);
+        assert_eq!(start_alpha, clipped_lane_alpha(straight, width));
+
+        // Wholly past the edge: masked away, but it must not divide by zero or
+        // ask for an inverted range.
+        let [(_, start_alpha), (_, end_alpha)] = clipped_line_stops(400.0, 500.0, width);
+        assert_eq!((start_alpha, end_alpha), (0.25, 0.25));
+    }
+
+    #[test]
+    fn a_line_only_gets_a_gradient_when_its_opacity_changes() {
+        let color = gpui::red();
+        let width = 270.0;
+        assert!(clipped_line_background(color, 30.0, 100.0, width)
+            .as_solid()
+            .is_some());
+        assert!(clipped_line_background(color, 30.0, 500.0, width)
+            .as_solid()
+            .is_none());
+    }
+
+    #[test]
+    fn only_edges_wholly_past_the_column_are_dropped() {
+        let edge = |from_lane, to_lane| GraphEdge {
+            from_lane,
+            to_lane,
+            color_index: 0,
+            is_merge: false,
+        };
+        let width = graph_column_width(50, 270.0);
+        let last_inside = (0..50)
+            .take_while(|&lane| lane_center_x(lane) < width)
+            .last()
+            .unwrap();
+
+        assert!(edge_reaches_column(&edge(last_inside, last_inside), width));
+        assert!(!edge_reaches_column(
+            &edge(last_inside + 1, last_inside + 1),
+            width
+        ));
+        // Crossing the edge in either direction still shows its inside part.
+        assert!(edge_reaches_column(&edge(0, 40), width));
+        assert!(edge_reaches_column(&edge(40, 0), width));
     }
 
     #[test]
@@ -4333,12 +4951,7 @@ mod tests {
         ];
         let graph_rows = compute_graph(&commits);
         let worktrees = vec![dirty_worktree("lint-cleanup", Some(make_oid(1)), false)];
-        let positions = compute_worktree_row_positions(
-            &commits,
-            &graph_rows,
-            &worktrees,
-            graph_lane_count(&graph_rows),
-        );
+        let positions = compute_worktree_row_positions(&commits, &graph_rows, &worktrees);
 
         let position = &positions[0];
         assert_eq!(position.commit_index, Some(2));
@@ -4358,12 +4971,7 @@ mod tests {
         let commits = vec![make_commit(1, &[], vec![RefLabel::Head])];
         let graph_rows = compute_graph(&commits);
         let worktrees = vec![dirty_worktree("feature", Some(make_oid(1)), true)];
-        let positions = compute_worktree_row_positions(
-            &commits,
-            &graph_rows,
-            &worktrees,
-            graph_lane_count(&graph_rows),
-        );
+        let positions = compute_worktree_row_positions(&commits, &graph_rows, &worktrees);
 
         assert_eq!(positions[0].node_lane, graph_rows[0].node_lane);
         assert_eq!(positions[0].parent_lane, Some(graph_rows[0].node_lane));
@@ -4378,12 +4986,7 @@ mod tests {
             dirty_worktree("linked", Some(make_oid(1)), false),
             dirty_worktree("current", Some(make_oid(1)), true),
         ];
-        let positions = compute_worktree_row_positions(
-            &commits,
-            &graph_rows,
-            &worktrees,
-            graph_lane_count(&graph_rows),
-        );
+        let positions = compute_worktree_row_positions(&commits, &graph_rows, &worktrees);
 
         let linked = positions
             .iter()
@@ -4404,12 +5007,7 @@ mod tests {
         let commits = vec![make_commit(1, &[], vec![RefLabel::Head])];
         let graph_rows = compute_graph(&commits);
         let worktrees = vec![dirty_worktree("outside-window", Some(make_oid(9)), false)];
-        let positions = compute_worktree_row_positions(
-            &commits,
-            &graph_rows,
-            &worktrees,
-            graph_lane_count(&graph_rows),
-        );
+        let positions = compute_worktree_row_positions(&commits, &graph_rows, &worktrees);
 
         assert_eq!(positions[0].commit_index, None);
         assert_eq!(positions[0].parent_lane, None);
@@ -4571,15 +5169,10 @@ mod tests {
     /// rather than to a hand-guessed arrangement.
     fn worktree_rows_for(commits: &[CommitInfo], worktrees: &[WorktreeGraphInfo]) -> Vec<usize> {
         let graph_rows = compute_graph(commits);
-        compute_worktree_row_positions(
-            commits,
-            &graph_rows,
-            worktrees,
-            graph_lane_count(&graph_rows),
-        )
-        .iter()
-        .map(|position| position.list_index)
-        .collect()
+        compute_worktree_row_positions(commits, &graph_rows, worktrees)
+            .iter()
+            .map(|position| position.list_index)
+            .collect()
     }
 
     #[test]
