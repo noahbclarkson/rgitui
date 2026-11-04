@@ -11,11 +11,11 @@ use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, img, point, px, uniform_list, Animation, AnimationExt, App, Bounds, ClickEvent,
-    ContentMask, Context, CursorStyle, ElementId, Entity, EventEmitter, FocusHandle,
-    ListSizingBehavior, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, PathBuilder,
-    Pixels, Point, Render, ScrollStrategy, SharedString, Size, UniformListScrollHandle, WeakEntity,
-    Window,
+    canvas, div, img, linear_color_stop, linear_gradient, point, px, uniform_list, Animation,
+    AnimationExt, App, Background, Bounds, ClickEvent, ContentMask, Context, CursorStyle,
+    ElementId, Entity, EventEmitter, FocusHandle, ListSizingBehavior, MouseButton, MouseDownEvent,
+    MouseMoveEvent, ObjectFit, PathBuilder, Pixels, Point, Render, ScrollStrategy, SharedString,
+    Size, UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{
     compact_ref_labels, compute_graph, CommitInfo, FileChangeKind, GraphEdge, GraphRow, RefLabel,
@@ -185,6 +185,43 @@ fn clipped_lane_alpha(x: f32, column_width: f32) -> f32 {
         let remaining = (1.0 - (x - fade_start) / GRAPH_FADE_WIDTH).max(0.0);
         0.25 + 0.75 * remaining
     }
+}
+
+/// Opacity along a line spanning `from_x` to `to_x` in a clipped graph column,
+/// as `(position, alpha)` stops. Positions run 0.0 to 1.0 across the part of the
+/// line inside the column, left to right, because that is the extent a masked
+/// path's gradient covers.
+fn clipped_line_stops(from_x: f32, to_x: f32, column_width: f32) -> [(f32, f32); 2] {
+    let left = from_x.min(to_x);
+    let right = from_x.max(to_x).min(column_width);
+    let span = right - left;
+    if span <= 0.0 {
+        let alpha = clipped_lane_alpha(left, column_width);
+        return [(0.0, alpha), (1.0, alpha)];
+    }
+    let fade_start = (column_width - GRAPH_FADE_WIDTH).clamp(left, right);
+    [fade_start, right].map(|x| ((x - left) / span, clipped_lane_alpha(x, column_width)))
+}
+
+/// What to paint a line in a clipped graph column with. A path takes one
+/// background, so a line that reaches the fade needs a gradient: an opacity
+/// picked for the whole path would either cut off abruptly at the column's
+/// edge or dim the part still well inside it.
+fn clipped_line_background(
+    color: gpui::Hsla,
+    from_x: f32,
+    to_x: f32,
+    column_width: f32,
+) -> Background {
+    let [(start, start_alpha), (end, end_alpha)] = clipped_line_stops(from_x, to_x, column_width);
+    if start_alpha == end_alpha {
+        return color.opacity(start_alpha).into();
+    }
+    linear_gradient(
+        90.0,
+        linear_color_stop(color.opacity(start_alpha), start),
+        linear_color_stop(color.opacity(end_alpha), end),
+    )
 }
 
 /// The content mask that keeps a graph cell's painting inside its column.
@@ -2161,11 +2198,13 @@ impl Render for GraphView {
             .global::<SettingsState>()
             .settings()
             .graph_column_max_width;
+        // Worktree rows show their summary in a message column even when the
+        // commit rows' one is hidden.
         let graph_budget = graph_width_budget(
             f32::from(self.container_bounds.size.width),
             show_author_column.then_some(author_width),
             show_date_column.then_some(date_col_width),
-            show_subject_column,
+            show_subject_column || !worktree_row_positions.is_empty(),
         );
         let graph_col_width = graph_column_width(
             self.shown_lanes,
@@ -2814,12 +2853,19 @@ impl Render for GraphView {
                                                     let to_x = px(lane_center_x(edge.to_lane));
                                                     let mut color =
                                                         rgitui_theme::lane_color(edge.color_index);
-                                                    if graph_clipped {
-                                                        color.a *= clipped_lane_alpha(
-                                                            f32::from(from_x.min(to_x)),
-                                                            graph_width,
-                                                        );
+                                                    if edge.is_merge {
+                                                        color.a *= 0.85;
                                                     }
+                                                    let edge_background: Background = if graph_clipped {
+                                                        clipped_line_background(
+                                                            color,
+                                                            f32::from(from_x),
+                                                            f32::from(to_x),
+                                                            graph_width,
+                                                        )
+                                                    } else {
+                                                        color.into()
+                                                    };
 
                                                     let start_y = if edge.from_lane == node_lane {
                                                         origin.y + mid_y
@@ -2829,12 +2875,6 @@ impl Render for GraphView {
                                                     let end_y = origin.y + h + px(4.0);
 
                                                     let stroke_width = px(2.0);
-
-                                                    let edge_color = if edge.is_merge {
-                                                        gpui::Hsla { a: 0.85, ..color }
-                                                    } else {
-                                                        color
-                                                    };
 
                                                     let mut path = PathBuilder::stroke(stroke_width);
 
@@ -2921,7 +2961,7 @@ impl Render for GraphView {
                                                     }
 
                                                     if let Ok(built_path) = path.build() {
-                                                        window.paint_path(built_path, edge_color);
+                                                        window.paint_path(built_path, edge_background);
                                                     }
                                                 }
 
@@ -4150,7 +4190,8 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                                     // explicit parent: the worktree's visible HEAD.
                                     // Orphan rows intentionally have no dangling edge.
                                     if let Some(parent_lane) = parent_lane {
-                                        let parent_x = origin.x + px(lane_center_x(parent_lane));
+                                        let parent_lane_x = lane_center_x(parent_lane);
+                                        let parent_x = origin.x + px(parent_lane_x);
                                         let end_y = origin.y + h + px(4.0);
                                         let mut path = PathBuilder::stroke(px(2.0));
 
@@ -4200,7 +4241,17 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                                         }
 
                                         if let Ok(built) = path.build() {
-                                            window.paint_path(built, node_color);
+                                            let background: Background = if graph_clipped {
+                                                clipped_line_background(
+                                                    node_color,
+                                                    node_x,
+                                                    parent_lane_x,
+                                                    graph_width,
+                                                )
+                                            } else {
+                                                node_color.into()
+                                            };
+                                            window.paint_path(built, background);
                                         }
                                     }
 
@@ -4775,6 +4826,60 @@ mod tests {
         assert!(near < 1.0 && edge < near);
         assert_eq!(edge, 0.25);
         assert_eq!(clipped_lane_alpha(width + 100.0, width), 0.25);
+    }
+
+    #[test]
+    fn an_edge_crossing_the_clipped_edge_fades_across_its_visible_part() {
+        let width = 270.0;
+        let fade_start = width - GRAPH_FADE_WIDTH;
+
+        // From a visible lane to one past the edge, in either direction: full
+        // opacity until the fade, faint where the mask cuts it.
+        for (from_x, to_x) in [(30.0, 500.0), (500.0, 30.0)] {
+            let [(start, start_alpha), (end, end_alpha)] = clipped_line_stops(from_x, to_x, width);
+            assert_eq!(start_alpha, 1.0);
+            assert_eq!(end_alpha, 0.25);
+            assert_eq!(start, (fade_start - 30.0) / (width - 30.0));
+            assert_eq!(end, 1.0);
+        }
+
+        // Starting inside the fade, it picks up at the opacity found there.
+        let inside = fade_start + GRAPH_FADE_WIDTH / 2.0;
+        let [(start, start_alpha), (end, end_alpha)] = clipped_line_stops(inside, 500.0, width);
+        assert_eq!(start, 0.0);
+        assert_eq!(start_alpha, clipped_lane_alpha(inside, width));
+        assert_eq!(end, 1.0);
+        assert_eq!(end_alpha, 0.25);
+    }
+
+    #[test]
+    fn an_edge_short_of_the_fade_or_straight_has_one_opacity() {
+        let width = 270.0;
+
+        let [(_, start_alpha), (_, end_alpha)] = clipped_line_stops(30.0, 100.0, width);
+        assert_eq!((start_alpha, end_alpha), (1.0, 1.0));
+
+        let straight = width - GRAPH_FADE_WIDTH / 2.0;
+        let [(_, start_alpha), (_, end_alpha)] = clipped_line_stops(straight, straight, width);
+        assert_eq!(start_alpha, end_alpha);
+        assert_eq!(start_alpha, clipped_lane_alpha(straight, width));
+
+        // Wholly past the edge: masked away, but it must not divide by zero or
+        // ask for an inverted range.
+        let [(_, start_alpha), (_, end_alpha)] = clipped_line_stops(400.0, 500.0, width);
+        assert_eq!((start_alpha, end_alpha), (0.25, 0.25));
+    }
+
+    #[test]
+    fn a_line_only_gets_a_gradient_when_its_opacity_changes() {
+        let color = gpui::red();
+        let width = 270.0;
+        assert!(clipped_line_background(color, 30.0, 100.0, width)
+            .as_solid()
+            .is_some());
+        assert!(clipped_line_background(color, 30.0, 500.0, width)
+            .as_solid()
+            .is_none());
     }
 
     #[test]
