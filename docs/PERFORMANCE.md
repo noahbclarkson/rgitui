@@ -174,6 +174,7 @@ In `crates/rgitui_perf/scenarios/`:
 | `hover-sweep` | The pointer swept over the sidebar, the graph rows and the window at 120Hz. Every row it crosses flips a hover state, so this is what measures hover feedback. |
 | `key-repeat-degradation` | A held arrow key at 30Hz, timed in blocks of 100, to see whether block eight costs what block one did. |
 | `idle` | Fifteen seconds of nothing. Any frame drawn here is one too many. |
+| `external-edits` | Tracked files saved from outside the app once a second, as an editor would. Measures a watcher refresh where no ref moved, which should not start a `git log`. |
 | `startup-warm` | Second launch, with the caches the first one left. |
 | `soak` | Repeated identical cycles; growth across them is a leak. |
 
