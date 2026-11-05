@@ -20,10 +20,10 @@ env:
   RUST_TOOLCHAIN: "1.97.1"
 
 jobs:
-  # Pre-flight: resolve version + run the same quality gates as ci.yml so a
-  # broken tag cannot ship. Every build job depends on this.
+  # Pre-flight: resolve the version and check the tag matches it. This is all
+  # the build jobs wait for, so they start within a minute of the tag.
   preflight:
-    name: Preflight (format, clippy, tests)
+    name: Preflight (version)
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -68,6 +68,21 @@ jobs:
             echo "::error::rust-toolchain.toml says $pinned but the workflow says $RUST_TOOLCHAIN"
             exit 1
           fi
+
+  # The same quality gates as ci.yml, so a broken tag cannot ship. They run
+  # beside the platform builds rather than ahead of them: nothing is published
+  # until `create-release`, which needs this job as well as every build.
+  verify:
+    name: Verify (format, clippy, tests)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+    steps:
+      - name: Checkout rgitui
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Install Linux system dependencies
         run: |
@@ -263,12 +278,20 @@ jobs:
           chmod +x script/bundle-linux.sh
           ./script/bundle-linux.sh
 
+      - name: Install cargo-deb
+        # A prebuilt binary; `cargo install` compiled it from source on every
+        # release.
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
+
       - name: Build .deb package
         env:
           VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          cargo install cargo-deb
-          cargo deb --package rgitui --deb-version "$VERSION"
+          # `--no-build` packages the release binary the AppImage step just
+          # built, rather than letting cargo-deb run its own build.
+          cargo deb --no-build --package rgitui --deb-version "$VERSION"
           cp target/debian/rgitui_*.deb "rgitui-${VERSION}-x86_64.deb"
 
       - name: Create plain tarball
@@ -357,7 +380,7 @@ jobs:
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [preflight, build-windows, build-linux, build-macos]
+    needs: [preflight, verify, build-windows, build-linux, build-macos]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
