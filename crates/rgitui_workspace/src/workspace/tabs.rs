@@ -185,12 +185,10 @@ impl Workspace {
             commit_panel.update(cx, |cp, cx| cp.set_staged_count(staged_count, cx));
         }
 
-        // Compute ahead/behind for all branches in the background after the
-        // initial fast refresh. This avoids blocking the first render with
-        // expensive graph walks (particularly impactful on repos with many branches).
-        project.update(cx, |proj, cx| {
-            proj.refresh_ahead_behind(cx);
-        });
+        // No ahead/behind pass here: the project has loaded no branches yet,
+        // so it would run `git for-each-ref` and two history walks with nothing
+        // to apply them to. `GitProject::refresh` starts one once its first
+        // phase has the branches.
 
         let github_data = self.github_data.clone();
         let issues_panel = cx.new({

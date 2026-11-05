@@ -1458,7 +1458,7 @@ impl GitProject {
         let origin_worktree_path = task_worktree_path.clone();
         let origin_repo_path = self.repo_path.clone();
         let refresh_repo_path = self.repo_path.clone();
-        let worktree_cache = self.worktree_status_cache.clone();
+        let worktree_cache = self.refresh_caches.clone();
         let author_filter = self.commit_author_filter.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -1613,7 +1613,7 @@ impl GitProject {
     ) -> Task<Result<()>> {
         let task_worktree_path = worktree_path.to_path_buf();
         let refresh_repo_path = self.repo_path.clone();
-        let worktree_cache = self.worktree_status_cache.clone();
+        let worktree_cache = self.refresh_caches.clone();
         let author_filter = self.commit_author_filter.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();

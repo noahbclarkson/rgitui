@@ -4,7 +4,7 @@ use git2::{Repository, StatusOptions};
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, Weak};
 
 use crate::types::*;
 
@@ -24,6 +24,73 @@ pub(super) fn normalize_commit_limit(limit: usize) -> usize {
 /// The fingerprint is derived from `repo.statuses()` output so it reflects both index
 /// and working-tree changes, not just `.git` sentinel file mtimes.
 pub(super) type WorktreeStatusCache = HashMap<PathBuf, (u64, WorkingTreeStatus)>;
+
+/// What a project's refreshes carry from one to the next.
+#[derive(Default)]
+pub(super) struct RefreshCaches {
+    pub worktree_status: Mutex<WorktreeStatusCache>,
+    commit_log: Mutex<Option<CommitLogEntry>>,
+}
+
+/// The commit list the last refresh loaded, and the key it was loaded under.
+///
+/// Weak, so it never keeps a list alive or holds a second copy of it: the entry
+/// is good for exactly as long as the project still shows that list. When the
+/// project appends a page in place (`Arc::make_mut`, which detaches weak
+/// handles rather than cloning) or replaces the list, the entry stops
+/// resolving and the next refresh runs `git log` again.
+struct CommitLogEntry {
+    key: u64,
+    commits: Weak<Vec<CommitInfo>>,
+    has_more: bool,
+}
+
+impl RefreshCaches {
+    /// The commits the last refresh loaded, if they were loaded under `key`
+    /// and are still the list the project shows.
+    fn reusable_commit_log(&self, key: u64) -> Option<(Arc<Vec<CommitInfo>>, bool)> {
+        let entry = self.commit_log.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = entry.as_ref().filter(|entry| entry.key == key)?;
+        Some((entry.commits.upgrade()?, entry.has_more))
+    }
+
+    fn keep_commit_log(&self, key: u64, commits: &Arc<Vec<CommitInfo>>, has_more: bool) {
+        *self.commit_log.lock().unwrap_or_else(|e| e.into_inner()) = Some(CommitLogEntry {
+            key,
+            commits: Arc::downgrade(commits),
+            has_more,
+        });
+    }
+}
+
+/// Everything the refresh's `git log` output depends on, hashed.
+///
+/// Commits are immutable, so the list is fixed by where it starts and how it is
+/// cut: every branch, remote-tracking branch and tag (`--branches --remotes
+/// --tags`), HEAD (walked too when detached, and labelled on its commit), the
+/// limit and the author filter. Replace refs and the shallow and graft files
+/// change which parents git reports without moving any of those refs, so they
+/// are part of the key as well.
+fn commit_log_key(repo: &Repository, limit: usize, author_filter: Option<&str>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    super::history_cache::ref_state_fingerprint(repo).hash(&mut hasher);
+    if let Ok(replacements) = repo.references_glob("refs/replace/*") {
+        let mut replacements: Vec<_> = replacements
+            .flatten()
+            .map(|reference| (reference.name_bytes().to_vec(), reference.target()))
+            .collect();
+        replacements.sort();
+        replacements.hash(&mut hasher);
+    }
+    for file in ["shallow", "info/grafts"] {
+        std::fs::read(repo.commondir().join(file))
+            .ok()
+            .hash(&mut hasher);
+    }
+    limit.hash(&mut hasher);
+    author_filter.hash(&mut hasher);
+    hasher.finish()
+}
 
 /// Remove valid Co-Authored-By trailer lines from a commit message.
 /// Only strips lines that have a parseable `Name <email>` format.
@@ -607,8 +674,10 @@ pub fn gather_refresh_data_lightweight(
     gather_refresh_data_internal(repo_path, false, commit_limit, None, None)
 }
 
-/// Like `gather_refresh_data_lightweight` but uses the per-worktree status cache to skip
-/// `batch_diff_stats` for worktrees whose content has not changed since the last refresh.
+/// Like `gather_refresh_data_lightweight` but reuses what the project's previous
+/// refreshes found: the per-worktree status cache skips `batch_diff_stats` for
+/// worktrees whose content has not changed, and the commit list is reused when
+/// no ref has moved.
 ///
 /// `author_filter`, when `Some`, restricts the loaded commit list to commits by
 /// that author so a watcher-driven refresh keeps the "My Commits" view intact
@@ -616,14 +685,14 @@ pub fn gather_refresh_data_lightweight(
 pub(super) fn gather_refresh_data_lightweight_cached(
     repo_path: &Path,
     commit_limit: usize,
-    cache: &Mutex<WorktreeStatusCache>,
+    caches: &RefreshCaches,
     author_filter: Option<&str>,
 ) -> Result<RefreshData> {
     log::debug!(
         "gather_refresh_data_lightweight_cached: repo={}",
         repo_path.display()
     );
-    gather_refresh_data_internal(repo_path, false, commit_limit, Some(cache), author_filter)
+    gather_refresh_data_internal(repo_path, false, commit_limit, Some(caches), author_filter)
 }
 
 /// Every commit reachable from `tip`, including `tip` itself.
@@ -659,9 +728,10 @@ fn gather_refresh_data_internal(
     repo_path: &Path,
     compute_ahead_behind: bool,
     commit_limit: usize,
-    worktree_cache: Option<&Mutex<WorktreeStatusCache>>,
+    refresh_caches: Option<&RefreshCaches>,
     author_filter: Option<&str>,
 ) -> Result<RefreshData> {
+    let worktree_cache = refresh_caches.map(|caches| &caches.worktree_status);
     let commit_limit = normalize_commit_limit(commit_limit);
     let refresh_timer = std::time::Instant::now();
     let repo = Repository::open(repo_path)
@@ -871,83 +941,43 @@ fn gather_refresh_data_internal(
         (status, stashes, worktrees)
     });
 
-    // Recent commits — use git log subprocess for commit-graph acceleration.
-    // libgit2's revwalk doesn't use .git/objects/info/commit-graph, making it
-    // orders of magnitude slower on large repos like the Linux kernel.
-    let (recent_commits, has_more_commits) = {
-        let t_log = std::time::Instant::now();
-        let limit = commit_limit;
-
-        let mut ref_map = std::collections::HashMap::<git2::Oid, Vec<RefLabel>>::new();
-        if let Ok(head) = repo.head() {
-            if let Some(oid) = head.target() {
-                ref_map.entry(oid).or_default().push(RefLabel::Head);
-            }
-        }
-        for branch in &branches {
-            if let Some(oid) = branch.tip_oid {
-                let label = if branch.is_remote {
-                    RefLabel::RemoteBranch(branch.name.clone())
-                } else {
-                    RefLabel::LocalBranch(branch.name.clone())
-                };
-                ref_map.entry(oid).or_default().push(label);
-            }
-        }
-        for tag in &tags {
-            ref_map
-                .entry(tag.oid)
-                .or_default()
-                .push(RefLabel::Tag(tag.name.clone()));
-        }
-
-        // `--topo-order` makes the subprocess emit commits in topological order
-        // (descendants before ancestors), the invariant the graph layout relies
-        // on. Without it git defaults to commit-date order, which is non-monotonic
-        // with topology for rebased/amended/cherry-picked or clock-skewed history
-        // and produces dangling lanes and misdrawn merges.
-        let mut log_cmd = git_command();
-        log_cmd.current_dir(repo_path).args([
-            "log",
-            "--branches",
-            "--remotes",
-            "--tags",
-            "--topo-order",
-            &format!("--format={}", commit_log_format()),
-        ]);
-        // Preserve an active "My Commits" filter across watcher/operation
-        // refreshes; without it the filtered list would be replaced by the full
-        // unfiltered log.
-        if let Some(author) = author_filter {
-            log_cmd.arg("--fixed-strings");
-            log_cmd.arg(format!("--author={}", author));
-        }
-        if head_detached {
-            log_cmd.arg("HEAD");
-        }
-        log_cmd.arg(format!("-{}", limit.saturating_add(1)));
-        let output = log_cmd.output().with_context(|| "Failed to run git log")?;
-
-        if !output.status.success() {
-            anyhow::bail!(
-                "git log failed: {}",
-                String::from_utf8_lossy(&output.stderr)
+    // Recent commits. Their output depends only on the refs, HEAD, the limit
+    // and the author filter, so a refresh that finds those unchanged — a file
+    // saved in an editor, a hunk staged — reuses the previous run's commits
+    // rather than starting another `git log` over the whole loaded history.
+    let log_key = refresh_caches.map(|_| commit_log_key(&repo, commit_limit, author_filter));
+    let reused = refresh_caches
+        .zip(log_key)
+        .and_then(|(caches, key)| caches.reusable_commit_log(key));
+    let (recent_commits, has_more_commits) = match reused {
+        Some(reused) => {
+            log::debug!(
+                "git log skipped: refs unchanged, reusing {} commits",
+                reused.0.len()
             );
+            reused
         }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut commits = parse_git_log_records(&stdout, &mut ref_map);
-        // The subprocess requested one extra commit (`-{limit + 1}`); its
-        // presence signals more history is available beyond the loaded window.
-        let has_more = commits.len() > limit;
-        commits.truncate(limit);
-
-        log::debug!(
-            "git log completed in {:?}: {} commits",
-            t_log.elapsed(),
-            commits.len()
-        );
-        (commits, has_more)
+        None => {
+            let (commits, has_more) = run_commit_log(
+                &repo,
+                repo_path,
+                &branches,
+                &tags,
+                head_detached,
+                commit_limit,
+                author_filter,
+            )?;
+            let commits = Arc::new(commits);
+            if let (Some(caches), Some(key)) = (refresh_caches, log_key) {
+                // Keyed on the refs as they were before the log ran. If they
+                // moved while it ran, the output may belong to either state,
+                // so it is not kept for either.
+                if commit_log_key(&repo, commit_limit, author_filter) == key {
+                    caches.keep_commit_log(key, &commits, has_more);
+                }
+            }
+            (commits, has_more)
+        }
     };
 
     log::info!(
@@ -984,6 +1014,94 @@ fn gather_refresh_data_internal(
     })
 }
 
+/// Run `git log` for the commit list a refresh shows.
+///
+/// Uses the subprocess rather than a libgit2 revwalk for commit-graph
+/// acceleration: libgit2's revwalk doesn't use
+/// `.git/objects/info/commit-graph`, making it orders of magnitude slower on
+/// large repos like the Linux kernel.
+fn run_commit_log(
+    repo: &Repository,
+    repo_path: &Path,
+    branches: &[BranchInfo],
+    tags: &[TagInfo],
+    head_detached: bool,
+    limit: usize,
+    author_filter: Option<&str>,
+) -> Result<(Vec<CommitInfo>, bool)> {
+    let t_log = std::time::Instant::now();
+    let mut ref_map = std::collections::HashMap::<git2::Oid, Vec<RefLabel>>::new();
+    if let Ok(head) = repo.head() {
+        if let Some(oid) = head.target() {
+            ref_map.entry(oid).or_default().push(RefLabel::Head);
+        }
+    }
+    for branch in branches {
+        if let Some(oid) = branch.tip_oid {
+            let label = if branch.is_remote {
+                RefLabel::RemoteBranch(branch.name.clone())
+            } else {
+                RefLabel::LocalBranch(branch.name.clone())
+            };
+            ref_map.entry(oid).or_default().push(label);
+        }
+    }
+    for tag in tags {
+        ref_map
+            .entry(tag.oid)
+            .or_default()
+            .push(RefLabel::Tag(tag.name.clone()));
+    }
+
+    // `--topo-order` makes the subprocess emit commits in topological order
+    // (descendants before ancestors), the invariant the graph layout relies
+    // on. Without it git defaults to commit-date order, which is non-monotonic
+    // with topology for rebased/amended/cherry-picked or clock-skewed history
+    // and produces dangling lanes and misdrawn merges.
+    let mut log_cmd = git_command();
+    log_cmd.current_dir(repo_path).args([
+        "log",
+        "--branches",
+        "--remotes",
+        "--tags",
+        "--topo-order",
+        &format!("--format={}", commit_log_format()),
+    ]);
+    // Preserve an active "My Commits" filter across watcher/operation
+    // refreshes; without it the filtered list would be replaced by the full
+    // unfiltered log.
+    if let Some(author) = author_filter {
+        log_cmd.arg("--fixed-strings");
+        log_cmd.arg(format!("--author={}", author));
+    }
+    if head_detached {
+        log_cmd.arg("HEAD");
+    }
+    log_cmd.arg(format!("-{}", limit.saturating_add(1)));
+    let output = log_cmd.output().with_context(|| "Failed to run git log")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "git log failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut commits = parse_git_log_records(&stdout, &mut ref_map);
+    // The subprocess requested one extra commit (`-{limit + 1}`); its
+    // presence signals more history is available beyond the loaded window.
+    let has_more = commits.len() > limit;
+    commits.truncate(limit);
+
+    log::debug!(
+        "git log completed in {:?}: {} commits",
+        t_log.elapsed(),
+        commits.len()
+    );
+    Ok((commits, has_more))
+}
+
 /// Enrich a commit with is_signed and co_authors (deferred from the revwalk).
 pub fn enrich_commit_info(repo_path: &Path, oid: git2::Oid) -> Result<(bool, Vec<Signature>)> {
     let repo = Repository::open(repo_path)?;
@@ -995,7 +1113,6 @@ pub fn enrich_commit_info(repo_path: &Path, oid: git2::Oid) -> Result<(bool, Vec
 }
 
 use gpui::{AsyncApp, Context, Task, WeakEntity};
-use std::sync::Arc;
 
 const FIRST_BATCH_SIZE: usize = 100;
 
@@ -1012,7 +1129,7 @@ impl GitProject {
         let commit_limit = self.commit_limit;
         let first_batch = FIRST_BATCH_SIZE.min(commit_limit);
         let t = std::time::Instant::now();
-        let cache = self.worktree_status_cache.clone();
+        let cache = self.refresh_caches.clone();
         // Honour an active "My Commits" filter so the initial load matches the
         // toggle instead of showing every author.
         let author_filter = self.commit_author_filter.clone();
@@ -2291,5 +2408,133 @@ mod working_tree_status_tests {
 
         assert_eq!(line_counts(&before.unstaged), vec![(1, 0)]);
         assert_eq!(line_counts(&after.unstaged), vec![(2, 0)]);
+    }
+}
+
+#[cfg(test)]
+mod commit_log_reuse_tests {
+    use super::*;
+    use rgitui_test_support::TempRepo;
+
+    fn gather(repo: &TempRepo, caches: &RefreshCaches, limit: usize) -> RefreshData {
+        gather_refresh_data_internal(repo.path(), false, limit, Some(caches), None).unwrap()
+    }
+
+    #[test]
+    fn a_refresh_with_no_ref_moved_reuses_the_commit_list() {
+        let repo = TempRepo::with_commits(3);
+        let caches = RefreshCaches::default();
+        let first = gather(&repo, &caches, 10);
+
+        // A working-tree edit is what wakes the watcher, and moves no ref.
+        repo.write_file("edited.txt", "changed\n");
+        let second = gather(&repo, &caches, 10);
+
+        assert!(Arc::ptr_eq(&first.recent_commits, &second.recent_commits));
+        assert_eq!(second.has_more_commits, first.has_more_commits);
+        assert_eq!(second.status.unstaged.len(), 1, "status is still fresh");
+    }
+
+    #[test]
+    fn a_new_commit_is_loaded_rather_than_reused() {
+        let repo = TempRepo::with_commits(3);
+        let caches = RefreshCaches::default();
+        let first = gather(&repo, &caches, 10);
+
+        let new_tip = repo.commit("one more");
+        let second = gather(&repo, &caches, 10);
+
+        assert!(!Arc::ptr_eq(&first.recent_commits, &second.recent_commits));
+        assert_eq!(second.recent_commits[0].oid, new_tip);
+    }
+
+    #[test]
+    fn a_new_tag_on_a_loaded_commit_is_labelled_rather_than_reused() {
+        let repo = TempRepo::with_commits(2);
+        let caches = RefreshCaches::default();
+        let first = gather(&repo, &caches, 10);
+
+        let tip = repo.head_oid();
+        let git = repo.repo();
+        git.reference("refs/tags/v1", tip, true, "test").unwrap();
+        let second = gather(&repo, &caches, 10);
+
+        assert!(!Arc::ptr_eq(&first.recent_commits, &second.recent_commits));
+        assert!(second.recent_commits[0]
+            .refs
+            .iter()
+            .any(|label| matches!(label, RefLabel::Tag(name) if name == "v1")));
+    }
+
+    #[test]
+    fn a_different_limit_or_author_filter_is_not_served_from_the_last_list() {
+        let repo = TempRepo::with_commits(5);
+        let caches = RefreshCaches::default();
+        let wide = gather(&repo, &caches, 10);
+
+        let narrow = gather(&repo, &caches, 2);
+        assert_eq!(narrow.recent_commits.len(), 2);
+        assert!(narrow.has_more_commits);
+        assert!(!Arc::ptr_eq(&wide.recent_commits, &narrow.recent_commits));
+
+        let filtered = gather_refresh_data_internal(
+            repo.path(),
+            false,
+            2,
+            Some(&caches),
+            Some("nobody@example.com"),
+        )
+        .unwrap();
+        assert!(filtered.recent_commits.is_empty());
+    }
+
+    #[test]
+    fn moving_head_without_moving_a_branch_reloads_the_list() {
+        let repo = TempRepo::with_commits(3);
+        let caches = RefreshCaches::default();
+        let first = gather(&repo, &caches, 10);
+
+        // Detach onto the commit the branch already points at: no branch or
+        // tag moved, but HEAD is now walked and labelled on its own.
+        let git = repo.repo();
+        git.set_head_detached(repo.head_oid()).unwrap();
+        let second = gather(&repo, &caches, 10);
+
+        assert!(second.head_detached);
+        assert!(!Arc::ptr_eq(&first.recent_commits, &second.recent_commits));
+    }
+
+    #[test]
+    fn the_cache_does_not_make_appending_a_page_copy_the_list() {
+        let repo = TempRepo::with_commits(3);
+        let caches = RefreshCaches::default();
+        let mut shown = gather(&repo, &caches, 10).recent_commits;
+        // A deep clone would copy every commit's strings; moving the list
+        // keeps them where they are.
+        let first_summary = shown[0].summary.as_ptr();
+
+        // What loading another page does to the list the project shows. With
+        // only a weak handle outstanding, `make_mut` moves the list rather
+        // than cloning it.
+        let extra = shown[0].clone();
+        Arc::make_mut(&mut shown).push(extra);
+        assert_eq!(
+            shown[0].summary.as_ptr(),
+            first_summary,
+            "the commits were moved, not cloned"
+        );
+
+        // And the list it was before is gone, so nothing hands it back.
+        let next = gather(&repo, &caches, 10);
+        assert_eq!(next.recent_commits.len(), 3);
+        assert!(!Arc::ptr_eq(&next.recent_commits, &shown));
+    }
+
+    #[test]
+    fn a_refresh_without_caches_never_reuses() {
+        let repo = TempRepo::with_commits(2);
+        let first = gather_refresh_data_internal(repo.path(), false, 10, None, None).unwrap();
+        let second = gather_refresh_data_internal(repo.path(), false, 10, None, None).unwrap();
+        assert!(!Arc::ptr_eq(&first.recent_commits, &second.recent_commits));
     }
 }

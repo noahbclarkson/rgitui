@@ -64,6 +64,12 @@ fn repo_identity_and_fingerprint(repo_path: &Path) -> Result<(String, u64)> {
         .canonicalize()
         .unwrap_or_else(|_| repo.commondir().to_path_buf());
     let identity = identity_path.to_string_lossy().into_owned();
+    Ok((identity, ref_state_fingerprint(&repo)))
+}
+
+/// A hash of every branch, remote-tracking branch and tag and where it points,
+/// plus HEAD. Any commit, checkout, fetch, reset or tag change moves it.
+pub(super) fn ref_state_fingerprint(repo: &Repository) -> u64 {
     let mut refs = Vec::new();
     if let Ok(iter) = repo.references() {
         for reference in iter.flatten() {
@@ -85,7 +91,7 @@ fn repo_identity_and_fingerprint(repo_path: &Path) -> Result<(String, u64)> {
     head.as_ref().and_then(|head| head.name()).hash(&mut hasher);
     repo.head_detached().unwrap_or(false).hash(&mut hasher);
     refs.hash(&mut hasher);
-    Ok((identity, hasher.finish()))
+    hasher.finish()
 }
 
 pub(super) fn ref_fingerprint(repo_path: &Path) -> Result<u64> {
