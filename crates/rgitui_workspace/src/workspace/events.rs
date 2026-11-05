@@ -2613,6 +2613,9 @@ pub(super) fn subscribe_diff_viewer(
 ) {
     let project = project.clone();
     let diff_viewer_ref = diff_viewer.clone();
+    // The prefetch waiting for this diff to settle. Replacing it drops the
+    // previous one, which cancels it before it has started any git process.
+    let mut pending_prefetch: Option<gpui::Task<()>> = None;
 
     cx.subscribe(diff_viewer, {
         move |this, _dv, event: &DiffViewerEvent, cx| {
@@ -2638,16 +2641,19 @@ pub(super) fn subscribe_diff_viewer(
                     project.read(cx).repo_path().to_path_buf()
                 };
 
-                Workspace::prefetch_blame_and_history(
-                    ViewCacheKey {
-                        repo_path,
-                        file_path: path.clone(),
-                        commit_id: commit_id.clone(),
-                        diff_generation: *generation,
-                    },
+                let key = ViewCacheKey {
+                    repo_path,
+                    file_path: path.clone(),
+                    commit_id: commit_id.clone(),
+                    diff_generation: *generation,
+                };
+                // Dropping the one it replaces cancels it.
+                pending_prefetch.replace(schedule_blame_and_history_prefetch(
+                    key,
                     caches.clone(),
+                    diff_viewer_ref.clone(),
                     cx,
-                );
+                ));
                 cx.notify();
                 return;
             }
@@ -2857,6 +2863,61 @@ pub(super) fn subscribe_diff_viewer(
         }
     })
     .detach();
+}
+
+/// How long a diff has to stay on screen before its blame and history are
+/// prefetched.
+///
+/// Each prefetch is a `git blame` and a `git log` for the file, tens of
+/// milliseconds of CPU apiece and longer on big files, and each holds a
+/// background thread while it waits on the process. Prefetching every diff
+/// meant holding an arrow key in the graph started two processes per keystroke
+/// for commits the user had already moved past, queued ahead of the diff they
+/// were waiting for. Key repeat is well under this, so only the commit the
+/// cursor stops on pays; the Blame and History tabs stay in their "loading"
+/// state for the extra moment.
+const BLAME_HISTORY_PREFETCH_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Prefetch blame and history for `key` once the diff has settled on it.
+///
+/// Returns the waiting task; dropping it before the delay runs out cancels the
+/// prefetch. A key already cached (or being computed) needs no wait, and the
+/// prefetch is skipped if the diff viewer has moved to something else by the
+/// time the delay is up.
+fn schedule_blame_and_history_prefetch(
+    key: ViewCacheKey,
+    caches: ViewCaches,
+    diff_viewer: Entity<DiffViewer>,
+    cx: &mut Context<Workspace>,
+) -> gpui::Task<()> {
+    fn cached<T>(
+        cache: &Mutex<crate::cache::LruCache<ViewCacheKey, T>>,
+        key: &ViewCacheKey,
+    ) -> bool {
+        cache.lock().is_ok_and(|cache| cache.contains(key))
+    }
+    if cached(&caches.blame, &key) && cached(&caches.history, &key) {
+        return gpui::Task::ready(());
+    }
+
+    cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+        cx.background_executor()
+            .timer(BLAME_HISTORY_PREFETCH_SETTLE)
+            .await;
+        this.update(cx, |workspace, cx| {
+            let still_shown = workspace
+                .tabs
+                .iter()
+                .find(|tab| tab.diff_viewer == diff_viewer)
+                .and_then(|tab| tab.current_view_cache_key(cx))
+                .is_some_and(|current| current == key);
+            if still_shown {
+                Workspace::prefetch_blame_and_history(key, caches, cx);
+                cx.notify();
+            }
+        })
+        .ok();
+    })
 }
 
 pub(super) fn subscribe_commit_panel(
