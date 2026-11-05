@@ -1,0 +1,134 @@
+{
+  "name": "external-edits",
+  "description": "Leaves the app open while three tracked files are saved from outside it, once a second for ten seconds, the way an editor beside rgitui saves them. Each save wakes the file watcher, which refreshes the working-tree status. No ref moves, so this measures what a refresh costs when only the working tree changed — the commit list should be reused, not reloaded with another `git log`.",
+  "corpus": "medium",
+  "start_from": "cold",
+  "steps": [
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 120000
+      }
+    },
+    {
+      "wait": {
+        "ms": 2000
+      }
+    },
+    {
+      "mark": {
+        "mark": "save-x10"
+      }
+    },
+    {
+      "dirty": {
+        "count": 3
+      }
+    },
+    {
+      "wait": {
+        "ms": 1000
+      }
+    },
+    {
+      "dirty": {
+        "count": 3
+      }
+    },
+    {
+      "wait": {
+        "ms": 1000
+      }
+    },
+    {
+      "dirty": {
+        "count": 3
+      }
+    },
+    {
+      "wait": {
+        "ms": 1000
+      }
+    },
+    {
+      "dirty": {
+        "count": 3
+      }
+    },
+    {
+      "wait": {
+        "ms": 1000
+      }
+    },
+    {
+      "dirty": {
+        "count": 3
+      }
+    },
+    {
+      "wait": {
+        "ms": 1000
+      }
+    },
+    {
+      "dirty": {
+        "count": 3
+      }
+    },
+    {
+      "wait": {
+        "ms": 1000
+      }
+    },
+    {
+      "dirty": {
+        "count": 3
+      }
+    },
+    {
+      "wait": {
+        "ms": 1000
+      }
+    },
+    {
+      "dirty": {
+        "count": 3
+      }
+    },
+    {
+      "wait": {
+        "ms": 1000
+      }
+    },
+    {
+      "dirty": {
+        "count": 3
+      }
+    },
+    {
+      "wait": {
+        "ms": 1000
+      }
+    },
+    {
+      "dirty": {
+        "count": 3
+      }
+    },
+    {
+      "wait": {
+        "ms": 1000
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "save-x10"
+      }
+    },
+    {
+      "snapshot": {
+        "snapshot": "after-saves"
+      }
+    }
+  ]
+}

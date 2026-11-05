@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::refresh::{gather_refresh_data_lightweight_cached, WorktreeStatusCache};
+use super::refresh::{gather_refresh_data_lightweight_cached, RefreshCaches};
 use super::{GitProject, GitProjectEvent};
 
 /// How long the watcher will go without a fingerprint scan when nothing under a
@@ -286,7 +286,7 @@ impl GitProject {
             (fallback.clone(), fallback)
         });
         let dirty = Arc::new(AtomicBool::new(false));
-        let worktree_cache: Arc<Mutex<WorktreeStatusCache>> = self.worktree_status_cache.clone();
+        let worktree_cache: Arc<RefreshCaches> = self.refresh_caches.clone();
 
         // Keep the notify watcher behind a mutex so the poll loop can add /
         // remove watched paths when the all-worktrees setting flips.

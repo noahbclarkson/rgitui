@@ -726,7 +726,7 @@ impl GitProject {
         let task_file_path = file_path.clone();
         let worktree_path = worktree_path.to_path_buf();
         let refresh_repo_path = self.repo_path.clone();
-        let worktree_cache = self.worktree_status_cache.clone();
+        let worktree_cache = self.refresh_caches.clone();
         let author_filter = self.commit_author_filter.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -764,7 +764,12 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.refresh_ahead_behind(cx);
+                            // Changing the index or worktree moves no ref, so the carried
+                            // ahead/behind and merged flags still hold; walk history only
+                            // if something left them unknown.
+                            if this.needs_graph_state_refresh() {
+                                this.refresh_ahead_behind(cx);
+                            }
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stage,
@@ -808,7 +813,7 @@ impl GitProject {
         let task_file_path = file_path.clone();
         let worktree_path = worktree_path.to_path_buf();
         let refresh_repo_path = self.repo_path.clone();
-        let worktree_cache = self.worktree_status_cache.clone();
+        let worktree_cache = self.refresh_caches.clone();
         let author_filter = self.commit_author_filter.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -847,7 +852,12 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.refresh_ahead_behind(cx);
+                            // Changing the index or worktree moves no ref, so the carried
+                            // ahead/behind and merged flags still hold; walk history only
+                            // if something left them unknown.
+                            if this.needs_graph_state_refresh() {
+                                this.refresh_ahead_behind(cx);
+                            }
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
@@ -891,7 +901,7 @@ impl GitProject {
         let task_file_path = file_path.clone();
         let worktree_path = worktree_path.to_path_buf();
         let refresh_repo_path = self.repo_path.clone();
-        let worktree_cache = self.worktree_status_cache.clone();
+        let worktree_cache = self.refresh_caches.clone();
         let author_filter = self.commit_author_filter.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -935,7 +945,12 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.refresh_ahead_behind(cx);
+                            // Changing the index or worktree moves no ref, so the carried
+                            // ahead/behind and merged flags still hold; walk history only
+                            // if something left them unknown.
+                            if this.needs_graph_state_refresh() {
+                                this.refresh_ahead_behind(cx);
+                            }
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stage,
@@ -979,7 +994,7 @@ impl GitProject {
         let task_file_path = file_path.clone();
         let worktree_path = worktree_path.to_path_buf();
         let refresh_repo_path = self.repo_path.clone();
-        let worktree_cache = self.worktree_status_cache.clone();
+        let worktree_cache = self.refresh_caches.clone();
         let author_filter = self.commit_author_filter.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -1025,7 +1040,12 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.refresh_ahead_behind(cx);
+                            // Changing the index or worktree moves no ref, so the carried
+                            // ahead/behind and merged flags still hold; walk history only
+                            // if something left them unknown.
+                            if this.needs_graph_state_refresh() {
+                                this.refresh_ahead_behind(cx);
+                            }
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Unstage,

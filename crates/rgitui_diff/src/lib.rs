@@ -3580,10 +3580,18 @@ impl Render for DiffViewer {
                     .color(Color::Muted),
                 );
 
+            // Sized to its text but never wider than the column. Without
+            // `min_w_0` a flex item will not shrink below its unwrapped text,
+            // so a column narrower than that pushed the card out over the
+            // panels on both sides. Once it can shrink, its labels are given a
+            // width and wrap, centred, inside it.
             let card = div()
                 .v_flex()
+                .min_w_0()
+                .max_w_full()
                 .gap(px(12.))
                 .items_center()
+                .text_center()
                 .px(px(32.))
                 .py(px(24.))
                 .rounded(px(8.))
@@ -3652,9 +3660,15 @@ impl Render for DiffViewer {
                 .child(
                     div()
                         .flex_1()
+                        .min_h_0()
                         .flex()
                         .items_center()
                         .justify_center()
+                        .p(px(12.))
+                        // Whatever still cannot fit — a column too narrow for
+                        // the icon — is clipped to the diff column rather than
+                        // drawn over its neighbours.
+                        .overflow_hidden()
                         .child(card),
                 )
                 .into_any_element();

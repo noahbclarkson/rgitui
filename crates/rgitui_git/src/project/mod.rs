@@ -23,12 +23,11 @@ use git2::{Repository, StatusOptions};
 use gpui::{AsyncApp, Context, EventEmitter, Task, WeakEntity};
 use messages::{error, error_message};
 use rgitui_i18n::{msg, Message};
-use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::types::*;
 
@@ -312,7 +311,9 @@ pub struct RefreshData {
     pub stashes: Vec<StashEntry>,
     pub worktrees: Vec<WorktreeInfo>,
     pub status: WorkingTreeStatus,
-    pub recent_commits: Vec<CommitInfo>,
+    /// Shared rather than owned: a refresh that finds the refs unchanged hands
+    /// back the list it loaded last time instead of a copy.
+    pub recent_commits: Arc<Vec<CommitInfo>>,
     /// Whether there are more commits beyond the loaded limit.
     pub has_more_commits: bool,
     /// The remote default branch (e.g. "main", "master"), detected from
@@ -383,9 +384,10 @@ pub struct GitProject {
     commit_author_filter: Option<String>,
     /// Maximum number of commits to load (configurable via settings).
     commit_limit: usize,
-    /// Per-worktree status cache shared between GitProject::refresh() and the watcher loop.
-    /// Keyed by worktree path; value is (fingerprint, cached WorkingTreeStatus).
-    worktree_status_cache: Arc<Mutex<refresh::WorktreeStatusCache>>,
+    /// What refreshes reuse from one to the next, shared between
+    /// `GitProject::refresh()`, the watcher loop and operation refreshes: the
+    /// per-worktree status cache and the last commit list.
+    refresh_caches: Arc<refresh::RefreshCaches>,
     /// Monotonic counter bumped on every `apply_refresh_data`. The watcher uses it
     /// to discard a stale lightweight refresh that would otherwise clobber a newer
     /// full/operation refresh that landed while the watcher's snapshot was in flight.
@@ -449,7 +451,7 @@ impl GitProject {
             current_user_email: None,
             commit_author_filter: None,
             commit_limit: 1000,
-            worktree_status_cache: Arc::new(Mutex::new(HashMap::new())),
+            refresh_caches: Arc::default(),
             refresh_generation: 0,
             commit_query_generation: 0,
             load_more_in_flight: false,
@@ -488,7 +490,7 @@ impl GitProject {
             current_user_email: None,
             commit_author_filter: None,
             commit_limit: refresh::normalize_commit_limit(commit_limit),
-            worktree_status_cache: Arc::new(Mutex::new(HashMap::new())),
+            refresh_caches: Arc::default(),
             refresh_generation: 0,
             commit_query_generation: 0,
             load_more_in_flight: false,
@@ -891,7 +893,7 @@ impl GitProject {
         self.stashes = data.stashes;
         self.worktrees = data.worktrees;
         self.status = Arc::new(data.status);
-        self.recent_commits = Arc::new(data.recent_commits);
+        self.recent_commits = data.recent_commits;
         self.has_more_commits = data.has_more_commits;
         self.default_branch = data.default_branch;
         self.current_user_email = data.current_user_email;
