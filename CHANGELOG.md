@@ -1,5 +1,15 @@
 ## [Unreleased]
 
+### Internal
+
+- **Release builds drop thin LTO and the single codegen unit.** The release
+  profile is now Cargo's default, which rebuilds the workspace crates 2.6×
+  faster (209s → 79s) for draw times within run-to-run noise. The binary is
+  larger: 58 MB → 86 MB, or 20 MB → 23 MB compressed.
+- **CI no longer builds a release binary on every push,** caches less, and
+  cancels superseded pull-request runs. Release builds start without waiting
+  for the test gate, which still has to pass before anything is published.
+
 ## [0.5.1] - 2026-11-05
 
 A localization and performance release. The interface can be shown in another
