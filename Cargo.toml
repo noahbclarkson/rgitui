@@ -99,10 +99,14 @@ calloop = { git = "https://github.com/zed-industries/calloop" }
 [profile.dev]
 incremental = true
 
+# Cargo's default release profile: opt-level 3, no LTO, 16 codegen units. Thin
+# LTO with one codegen unit made rebuilding the workspace crates 2.6x slower
+# (209s -> 79s locally, more on a 4-core runner) for draw times within run-to-run
+# noise of this one — measured on graph-scroll, hover-sweep, scroll-storm and
+# startup. Since the graph stopped costing a render pass per row, frame time is
+# no longer bound by how tightly the CPU side is compiled.
 [profile.release]
 opt-level = 3
-lto = "thin"
-codegen-units = 1
 
 # Profile for `rgitui_perf` runs. Debug builds optimise so differently that
 # their timings say nothing about the shipped app, so the harness measures a
