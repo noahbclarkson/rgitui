@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-05
+
+A localization and performance release. The interface can be shown in another
+language, starting with Simplified Chinese. On integrated GPUs, browsing commits
+and hovering no longer drop frames: hover feedback that trailed the pointer by
+50–150ms now keeps up with it. rgitui also stops starting `git` processes on
+every keystroke and every file save. The commit graph's column now fits the
+lanes on screen instead of the widest point of the whole history.
+
 ### Added
 
 - **The interface can be shown in another language.** *Settings → Appearance →
@@ -18,7 +27,28 @@
   is running, what finished and why something failed. Translation by
   @VedaChen. (#89, #91, #92)
 
+### Changed
+
+- **The graph column fits the lanes on screen, up to a cap you can drag.** It
+  was sized to the busiest row anywhere in the loaded history with no limit, so
+  one wide stretch far down a large repository widened every row, squeezed the
+  Message column to a few words, and only ever grew with *Load more commits*.
+  It now measures the rows in view, grows at once and shrinks 400ms after
+  scrolling stops, and never passes `graph_column_max_width` (270px by default,
+  about 12 lanes). Drag the right edge of the Graph header to change it. Lanes
+  cut off by the cap fade out, and a commit whose lane is past the edge is
+  pinned there with a `›` marker. (#93)
+- **Blame and History are prepared once a diff settles.** They used to start a
+  `git blame` and a `git log` for every diff shown. They now wait until the diff
+  has been on screen for 250ms, so their tabs stay in the loading state that
+  much longer after a selection, and stepping through commits runs neither.
+  (#98, closes #96)
+- **The working-tree node's dashed outer ring has finer dashes.** It is drawn
+  with gpui's dashed border; keeping the old eight bold dashes would cost a
+  full-window render pass in every frame that shows it. (#95)
+
 ### Fixed
+
 
 - **Retrying a failed force push pushed without `--force`.** The retry decided
   whether to force by looking for "force push" in the failure message, which
@@ -29,6 +59,59 @@
   localized git translates them; ahead/behind counts were lost the same way.
   git is now run with `LC_MESSAGES=C`, so its messages are always English
   while dates, sorting and encodings stay as the user has them. (#90)
+- **The Message column could disappear in a narrow panel.** The graph column
+  took the width first; the Message column now keeps 200px and the graph gives
+  way. (#93)
+- **The "Select a file to view changes" card spilled over the sidebar.** In a
+  diff column narrower than the card, it overflowed on both sides and covered
+  sidebar and detail-panel controls. It now shrinks, wraps its text and stays
+  inside the column, and so do the loading and error cards. (#98, closes #97)
+
+### Performance
+
+Measured with the `rgitui_perf` scenarios on `--profile perf` builds, on a
+Ryzen 7 5700U laptop with its integrated GPU (NixOS, Hyprland, 60Hz).
+
+- **The graph no longer makes the GPU redraw the whole window several times a
+  frame.** gpui renders each run of paths in a full-window, 4× multisampled
+  pass. Graph dots, rings and approach lines were paths, and rows painted into
+  their neighbours, which stopped gpui merging them, so a screen of rows cost
+  5–8 such passes per frame. Dots, rings and straight lanes are now quads and
+  every row stays inside its bounds. Scrolling the graph (`graph-scroll`):
+  path passes per frame **6–8 → 0–1**, dropped frames **32 → 4** of about 580,
+  frame interval p95 **26.1ms → 17.2ms**. (#95)
+- **Hovering redraws only the panel under the pointer.** Every hover rebuilt,
+  laid out and painted every panel. The sidebar, graph, diff viewer, detail
+  panel and commit panel are now cached and redraw only when they change.
+  Sweeping the pointer over the window (`hover-sweep`): main-thread draw p50
+  **10.1ms → 1.5ms**, p95 **11.0ms → 6.7ms**. (#95)
+- **Stepping through commits no longer starts two `git` processes per step.**
+  Moving the selection 500 commits through this repository started 999 `git`
+  processes, mostly `git blame` and `git log` for commits already passed.
+  Now it starts **8**, total CPU time (rgitui plus its `git` processes) falls
+  **38.6s → 25.1s**, frame p95 **18.9ms → 17.2ms**, and the app's own heap peak
+  **34.1MB → 22.9MB**. (#98)
+- **Saving a file or staging no longer reloads the commit history.** Every
+  watcher refresh, stage, unstage and discard reran `git log` over the whole
+  loaded history, about 1,000 commits. The last list is now reused while no
+  ref, HEAD, limit or author filter has changed. Index-only operations also
+  stopped recomputing ahead/behind counts and merged flags they cannot change,
+  a `git for-each-ref` and two history walks each time. Ten stage/unstage
+  cycles (`staging-churn`): `git` processes **42 → 8**, CPU time
+  **11.4s → 6.7s**, finished in **6.2s instead of 8.8s** with no dropped
+  frames. Ten saves from an editor (`external-edits`): **15 → 5** processes.
+  (#98)
+- **One `git` process fewer when a repository opens:** opening a tab ran an
+  ahead/behind pass before any branches had loaded. (#98)
+
+### Internal
+
+- **`hover` replay step and `hover-sweep` scenario** for measuring hover
+  feedback, and an **`external-edits` scenario** that saves tracked files from
+  outside the app. (#95, #98)
+- **`staging-churn` runs again.** Its `dirty` step stopped its tree walk early,
+  which libgit2 reports as an error, so the scenario had failed at step 1 on
+  every run. (#98)
 
 ## [0.5.0] - 2026-10-07
 
@@ -1341,7 +1424,8 @@ establishes a feature-complete baseline for day-to-day use.
 - Only x86_64 Windows and Linux, and x86_64/aarch64 macOS are built by CI.
   Other architectures can be compiled locally with `cargo build --release`.
 
-[Unreleased]: https://github.com/noahbclarkson/rgitui/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/noahbclarkson/rgitui/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/noahbclarkson/rgitui/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/noahbclarkson/rgitui/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/noahbclarkson/rgitui/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/noahbclarkson/rgitui/compare/v0.3.2...v0.4.0

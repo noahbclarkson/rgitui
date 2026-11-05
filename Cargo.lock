@@ -5518,7 +5518,7 @@ dependencies = [
 
 [[package]]
 name = "rgitui"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5544,7 +5544,7 @@ dependencies = [
 
 [[package]]
 name = "rgitui_ai"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "futures",
@@ -5559,7 +5559,7 @@ dependencies = [
 
 [[package]]
 name = "rgitui_diff"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "git2",
@@ -5578,7 +5578,7 @@ dependencies = [
 
 [[package]]
 name = "rgitui_git"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "cap-fs-ext",
@@ -5603,7 +5603,7 @@ dependencies = [
 
 [[package]]
 name = "rgitui_graph"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5622,7 +5622,7 @@ dependencies = [
 
 [[package]]
 name = "rgitui_i18n"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "dirs",
  "gpui",
@@ -5636,7 +5636,7 @@ dependencies = [
 
 [[package]]
 name = "rgitui_perf"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "backtrace",
@@ -5656,7 +5656,7 @@ dependencies = [
 
 [[package]]
 name = "rgitui_settings"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5671,7 +5671,7 @@ dependencies = [
 
 [[package]]
 name = "rgitui_test_support"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "git2",
  "gpui",
@@ -5681,7 +5681,7 @@ dependencies = [
 
 [[package]]
 name = "rgitui_theme"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -5693,7 +5693,7 @@ dependencies = [
 
 [[package]]
 name = "rgitui_ui"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "gpui",
  "log",
@@ -5707,7 +5707,7 @@ dependencies = [
 
 [[package]]
 name = "rgitui_workspace"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "async-channel",
