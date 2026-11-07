@@ -6,11 +6,24 @@ on:
   pull_request:
     branches: [main]
 
+# A newer push to the same pull request makes the run in progress worthless, so
+# it is cancelled rather than left to hold runners. Pushes to `main` each finish:
+# they are what the cache is saved from.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
   # Kept in step with `rust-toolchain.toml`; the check job asserts they match.
   RUST_TOOLCHAIN: "1.97.1"
+  # CI builds are compiled to be checked and tested, then thrown away, so they
+  # are built for compile speed. Line tables are all a test backtrace needs to
+  # name a file and line; full debug info roughly doubled the size of the target
+  # directory, which the cache then uploaded and downloaded on every run.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
 jobs:
   check:
@@ -19,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-14]
+        os: [ubuntu-latest, windows-latest, macos-15]
 
     steps:
       - name: Checkout rgitui
@@ -77,6 +90,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-bin: false
+          # Only `main` writes the cache; pull requests restore it. Each PR
+          # saving its own copy pushed the repository past GitHub's 10 GB cache
+          # limit, which evicted `main`'s caches and left the next run cold.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -101,8 +118,6 @@ jobs:
             exit 1
           fi
 
-      - name: Build release binary
-        run: cargo build --release --package rgitui
 
   # The performance harness compiles roughly two thousand lines across six
   # crates that the default feature set leaves out entirely — the `HeapSize`
@@ -144,6 +159,7 @@ jobs:
         with:
           cache-bin: false
           key: perf
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run clippy with the harness enabled
         run: cargo clippy --workspace --all-targets --features rgitui/perf -- -D warnings

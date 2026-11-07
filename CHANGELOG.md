@@ -1,5 +1,3 @@
-## [Unreleased]
-
 ## [0.5.1] - 2026-11-05
 
 A localization and performance release. The interface can be shown in another
@@ -112,6 +110,15 @@ Ryzen 7 5700U laptop with its integrated GPU (NixOS, Hyprland, 60Hz).
 - **`staging-churn` runs again.** Its `dirty` step stopped its tree walk early,
   which libgit2 reports as an error, so the scenario had failed at step 1 on
   every run. (#98)
+- **Release builds drop thin LTO and the single codegen unit.** The release
+  profile is now Cargo's default, which rebuilds the workspace crates 2.6×
+  faster (209s → 79s) for draw times within run-to-run noise. The binary is
+  larger: 58 MB → 86 MB, or 20 MB → 23 MB compressed. (#99)
+- **CI no longer builds a release binary on every push,** caches less, and
+  cancels superseded pull-request runs. Release builds start without waiting
+  for the test gate, which still has to pass before anything is published. (#99)
+- **macOS CI and release builds run on `macos-15`.** GitHub no longer accepts
+  jobs for `macos-14`, so the macOS check was cancelled before it started. (#99)
 
 ## [0.5.0] - 2026-10-07
 
