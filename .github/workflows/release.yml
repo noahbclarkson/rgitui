@@ -335,7 +335,7 @@ jobs:
   build-macos:
     name: Build macOS (aarch64)
     needs: preflight
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Checkout rgitui
         uses: actions/checkout@v7

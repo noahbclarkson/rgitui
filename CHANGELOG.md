@@ -9,6 +9,8 @@
 - **CI no longer builds a release binary on every push,** caches less, and
   cancels superseded pull-request runs. Release builds start without waiting
   for the test gate, which still has to pass before anything is published.
+- **macOS CI and release builds run on `macos-15`.** GitHub no longer accepts
+  jobs for `macos-14`, so the macOS check was cancelled before it started.
 
 ## [0.5.1] - 2026-11-05
 
