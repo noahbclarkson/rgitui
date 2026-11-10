@@ -537,7 +537,10 @@ fn compute_working_tree_status(
     cache: Option<&Mutex<WorktreeStatusCache>>,
     line_stats: bool,
 ) -> Result<WorkingTreeStatus> {
+    let total_started = std::time::Instant::now();
+    let repo_open_started = std::time::Instant::now();
     let repo = Repository::open(repo_path)?;
+    let repo_open_elapsed = repo_open_started.elapsed();
     let mut wt_status = WorkingTreeStatus::default();
 
     let mut opts = StatusOptions::new();
@@ -545,16 +548,29 @@ fn compute_working_tree_status(
         .recurse_untracked_dirs(true)
         .include_unmodified(false);
 
+    let git_status_started = std::time::Instant::now();
     let statuses = repo.statuses(Some(&mut opts))?;
+    let git_status_elapsed = git_status_started.elapsed();
+    let status_entry_count = statuses.len();
 
     // Compute fingerprint once; used for both the cache read and the cache write.
+    let fingerprint_started = std::time::Instant::now();
     let fingerprint = cache.map(|_| status_fingerprint(repo_path, &statuses, line_stats));
+    let fingerprint_elapsed = fingerprint_started.elapsed();
 
     if let (Some(fp), Some(c)) = (fingerprint, cache) {
         let guard = c.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((cached_fp, cached_status)) = guard.get(repo_path) {
             if *cached_fp == fp {
-                log::debug!("worktree status cache hit: {}", repo_path.display());
+                log::info!(
+                    "worktree status timing: path={} open={:?} git_status={:?} entries={} fingerprint={:?} cache=hit total={:?}",
+                    repo_path.display(),
+                    repo_open_elapsed,
+                    git_status_elapsed,
+                    status_entry_count,
+                    fingerprint_elapsed,
+                    total_started.elapsed()
+                );
                 return Ok(cached_status.clone());
             }
         }
@@ -587,6 +603,7 @@ fn compute_working_tree_status(
         Default::default()
     };
 
+    let convert_started = std::time::Instant::now();
     for entry in statuses.iter() {
         let path = PathBuf::from(entry.path().unwrap_or(""));
         let st = entry.status();
@@ -658,12 +675,26 @@ fn compute_working_tree_status(
         }
     }
 
+    let convert_elapsed = convert_started.elapsed();
     if let (Some(fp), Some(c)) = (fingerprint, cache) {
         c.lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(repo_path.to_path_buf(), (fp, wt_status.clone()));
     }
 
+    log::info!(
+        "worktree status timing: path={} open={:?} git_status={:?} entries={} fingerprint={:?} convert={:?} staged={} unstaged={} line_stats={} total={:?}",
+        repo_path.display(),
+        repo_open_elapsed,
+        git_status_elapsed,
+        status_entry_count,
+        fingerprint_elapsed,
+        convert_elapsed,
+        wt_status.staged.len(),
+        wt_status.unstaged.len(),
+        line_stats,
+        total_started.elapsed()
+    );
     Ok(wt_status)
 }
 
@@ -893,6 +924,7 @@ fn gather_refresh_data_internal(
             s.spawn(|| compute_working_tree_status(repo_path, worktree_cache, line_stats));
 
         let stash_handle = s.spawn(|| {
+            let stash_started = std::time::Instant::now();
             let mut stashes = Vec::new();
             if let Ok(mut repo_mut) = Repository::open(repo_path) {
                 let _ = repo_mut.stash_foreach(|stash_index, message, oid| {
@@ -904,11 +936,27 @@ fn gather_refresh_data_internal(
                     true
                 });
             }
+            log::info!(
+                "refresh timing: stash enumeration completed in {:?} ({} entries)",
+                stash_started.elapsed(),
+                stashes.len()
+            );
             stashes
         });
 
+        let worktree_discovery_started = std::time::Instant::now();
         let mut worktrees = gather_worktrees(&repo);
+        log::info!(
+            "refresh timing: discovered {} worktrees in {:?}",
+            worktrees.len(),
+            worktree_discovery_started.elapsed()
+        );
         let mut worktree_status_handles = Vec::new();
+        let non_current_worktree_count = worktrees.iter().filter(|wt| !wt.is_current).count();
+        log::info!(
+            "refresh timing: scanning {} non-current worktrees for file status",
+            non_current_worktree_count
+        );
         for (idx, worktree) in worktrees.iter().enumerate() {
             if worktree.is_current {
                 continue;
