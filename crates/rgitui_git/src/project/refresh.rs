@@ -1191,17 +1191,17 @@ impl GitProject {
                     // Do not persist a partial first page when a full page is
                     // coming next; otherwise the existing cache file prevents
                     // the completed history from ever being persisted.
-                    if (!data.has_more_commits || first_batch >= commit_limit)
-                        && let Some(fingerprint) = cache_fingerprint
-                    {
-                        if let Err(error) = super::history_cache::store(
-                            &cache_path_p1,
-                            fingerprint,
-                            &data.recent_commits,
-                            data.has_more_commits,
-                            data.default_branch.as_deref(),
-                        ) {
-                            log::debug!("history cache write skipped: {}", error);
+                    if !data.has_more_commits || first_batch >= commit_limit {
+                        if let Some(fingerprint) = cache_fingerprint {
+                            if let Err(error) = super::history_cache::store(
+                                &cache_path_p1,
+                                fingerprint,
+                                &data.recent_commits,
+                                data.has_more_commits,
+                                data.default_branch.as_deref(),
+                            ) {
+                                log::debug!("history cache write skipped: {}", error);
+                            }
                         }
                     }
                     Ok::<_, anyhow::Error>((data, cache_fingerprint))

@@ -505,9 +505,10 @@ impl GitProject {
             project.default_branch = cached.default_branch;
             // Reuse the validated on-disk history during the first live
             // refresh instead of immediately running the same git log again.
+            let initial_batch = project.recent_commits.len().max(100).min(project.commit_limit);
             project.refresh_caches.seed_hydrated_history(
                 &repo,
-                project.commit_limit,
+                initial_batch,
                 &project.recent_commits,
                 project.has_more_commits,
             );
