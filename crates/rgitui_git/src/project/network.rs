@@ -9,7 +9,7 @@ use crate::types::*;
 
 use super::argsafe::{validate_branch_name, validate_remote_name};
 use super::auth::run_git_network_command;
-use super::refresh::gather_refresh_data;
+use super::refresh::{gather_refresh_data, gather_refresh_data_lightweight_cached};
 use super::{
     head_branch_name, pull_target, push_target, GitProject, GitProjectEvent, RefreshData,
 };
@@ -298,6 +298,8 @@ impl GitProject {
         let task_worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
+        let refresh_caches = self.refresh_caches.clone();
+        let author_filter = self.commit_author_filter.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Pull,
             msg!(
@@ -314,12 +316,21 @@ impl GitProject {
             let result: anyhow::Result<(Message, bool, Option<String>, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
+                    let operation_started = std::time::Instant::now();
                     let (msg, is_conflict, details) = {
                         // Let Git reject only changes that would actually be overwritten.
                         validate_remote_name(&task_remote_name)?;
                         validate_branch_name(&task_branch_name)?;
                         let args = pull_arguments(&task_remote_name, &task_branch_name, auto_stash);
-                        match run_git_network_command(&task_worktree_path, &args) {
+                        let git_started = std::time::Instant::now();
+                        let pull_result = run_git_network_command(&task_worktree_path, &args);
+                        log::info!(
+                            "pull timing: git command completed in {:?} (remote={} branch={})",
+                            git_started.elapsed(),
+                            task_remote_name,
+                            task_branch_name
+                        );
+                        match pull_result {
                             Ok(details) => {
                                 let msg = if details
                                     .as_deref()
@@ -379,7 +390,25 @@ impl GitProject {
                         }
                     }; // repo dropped here
 
-                    let data = gather_refresh_data(&repo_path, commit_limit)?;
+                    // Use the same caches as watcher refreshes and defer graph walks.
+                    // The old full refresh performed libgit2 ahead/behind walks for
+                    // every local branch before the Pull operation could complete.
+                    let refresh_started = std::time::Instant::now();
+                    let refresh_result = gather_refresh_data_lightweight_cached(
+                        &repo_path,
+                        commit_limit,
+                        &refresh_caches,
+                        author_filter.as_deref(),
+                    );
+                    log::info!(
+                        "pull timing: lightweight repository refresh completed in {:?}",
+                        refresh_started.elapsed()
+                    );
+                    let data = refresh_result?;
+                    log::info!(
+                        "pull timing: background operation completed in {:?}",
+                        operation_started.elapsed()
+                    );
                     Ok((msg, is_conflict, details, data))
                 })
                 .await;
@@ -389,6 +418,11 @@ impl GitProject {
                     match result {
                         Ok((msg, is_conflict, details, data)) => {
                             this.apply_refresh_data(data);
+                            if this.needs_graph_state_refresh() {
+                                // Keep the Pull completion path responsive; the
+                                // expensive branch graph state is filled in later.
+                                this.refresh_ahead_behind(cx);
+                            }
                             if is_conflict {
                                 this.fail_op(
                                     operation_id,
