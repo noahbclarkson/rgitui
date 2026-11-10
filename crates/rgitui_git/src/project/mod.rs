@@ -503,7 +503,15 @@ impl GitProject {
             project.commit_offset = project.recent_commits.len();
             project.has_more_commits = cached.has_more_commits;
             project.default_branch = cached.default_branch;
-            log::debug!(
+            // Reuse the validated on-disk history during the first live
+            // refresh instead of immediately running the same git log again.
+            project.refresh_caches.seed_hydrated_history(
+                &repo,
+                project.commit_limit,
+                &project.recent_commits,
+                project.has_more_commits,
+            );
+            log::info!(
                 "hydrated {} commits from persistent history cache",
                 project.recent_commits.len()
             );

@@ -61,6 +61,20 @@ impl RefreshCaches {
             has_more,
         });
     }
+
+    /// A persistent cache entry was validated against the current refs on
+    /// repository open. Seed the in-memory cache so the first refresh can reuse
+    /// its commits instead of rebuilding their entire history.
+    pub(super) fn seed_hydrated_history(
+        &self,
+        repo: &Repository,
+        commit_limit: usize,
+        commits: &Arc<Vec<CommitInfo>>,
+        has_more: bool,
+    ) {
+        let key = commit_log_key(repo, commit_limit, None);
+        self.keep_commit_log(key, commits, has_more);
+    }
 }
 
 /// Everything the refresh's `git log` output depends on, hashed.
@@ -873,6 +887,7 @@ fn gather_refresh_data_internal(
     // reason as in `compute_working_tree_status`. Status and stashes open their
     // own repos, while worktrees and the revwalk share `&repo`.
     let line_stats = rgitui_settings::change_line_stats_enabled();
+    let status_started = std::time::Instant::now();
     let (status, stashes, worktrees) = std::thread::scope(|s| {
         let status_handle =
             s.spawn(|| compute_working_tree_status(repo_path, worktree_cache, line_stats));
@@ -940,11 +955,16 @@ fn gather_refresh_data_internal(
         let stashes = stash_handle.join().unwrap_or_default();
         (status, stashes, worktrees)
     });
+    log::info!(
+        "refresh timing: file status, stashes and worktrees completed in {:?}",
+        status_started.elapsed()
+    );
 
     // Recent commits. Their output depends only on the refs, HEAD, the limit
     // and the author filter, so a refresh that finds those unchanged — a file
     // saved in an editor, a hunk staged — reuses the previous run's commits
     // rather than starting another `git log` over the whole loaded history.
+    let history_started = std::time::Instant::now();
     let log_key = refresh_caches.map(|_| commit_log_key(&repo, commit_limit, author_filter));
     let reused = refresh_caches
         .zip(log_key)
@@ -980,6 +1000,11 @@ fn gather_refresh_data_internal(
         }
     };
 
+    log::info!(
+        "refresh timing: commit history completed in {:?} ({} commits)",
+        history_started.elapsed(),
+        recent_commits.len()
+    );
     log::info!(
         "gather_refresh_data_internal complete in {:?}: {} commits, {} branches, staged={} unstaged={}",
         refresh_timer.elapsed(),
@@ -1127,7 +1152,12 @@ impl GitProject {
         let query_generation = self.commit_query_generation;
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
-        let first_batch = FIRST_BATCH_SIZE.min(commit_limit);
+        // A valid on-disk history cache has already been loaded by GitProject::open.
+        // Refresh that full window in one pass, instead of loading 100 commits
+        // and then rescanning the same history up to commit_limit again.
+        let first_batch = FIRST_BATCH_SIZE
+            .max(self.recent_commits.len())
+            .min(commit_limit);
         let t = std::time::Instant::now();
         let cache = self.refresh_caches.clone();
         // Honour an active "My Commits" filter so the initial load matches the
@@ -1158,10 +1188,15 @@ impl GitProject {
                         &cache,
                         author_filter_p1.as_deref(),
                     )?;
-                    if let Some(cache_fingerprint) = cache_fingerprint {
+                    // Do not persist a partial first page when a full page is
+                    // coming next; otherwise the existing cache file prevents
+                    // the completed history from ever being persisted.
+                    if (!data.has_more_commits || first_batch >= commit_limit)
+                        && let Some(fingerprint) = cache_fingerprint
+                    {
                         if let Err(error) = super::history_cache::store(
                             &cache_path_p1,
-                            cache_fingerprint,
+                            fingerprint,
                             &data.recent_commits,
                             data.has_more_commits,
                             data.default_branch.as_deref(),
@@ -1169,10 +1204,11 @@ impl GitProject {
                             log::debug!("history cache write skipped: {}", error);
                         }
                     }
-                    Ok::<_, anyhow::Error>(data)
+                    Ok::<_, anyhow::Error>((data, cache_fingerprint))
                 })
                 .await?;
 
+            let (data, cache_fingerprint) = data;
             let needs_more = data.has_more_commits && first_batch < commit_limit;
             let branch_tips: Vec<(git2::Oid, bool, String)> = data
                 .branches
@@ -1234,10 +1270,10 @@ impl GitProject {
                     })
                     .await?;
 
-                cx.update(|cx| {
+                let completed = cx.update(|cx| {
                     this.update(cx, |this, cx| {
                         if this.commit_query_generation != query_generation {
-                            return Ok(());
+                            return Ok::<_, anyhow::Error>(None);
                         }
                         let existing_oids: std::collections::HashSet<git2::Oid> =
                             this.recent_commits.iter().map(|c| c.oid).collect();
@@ -1257,11 +1293,36 @@ impl GitProject {
                             t.elapsed(),
                             this.recent_commits.len()
                         );
+                        let completed = (
+                            Arc::clone(&this.recent_commits),
+                            this.has_more_commits,
+                            this.default_branch.clone(),
+                        );
                         cx.emit(GitProjectEvent::StatusChanged);
                         cx.notify();
-                        Ok(())
+                        Ok::<_, anyhow::Error>(Some(completed))
                     })
-                })?
+                })??;
+
+                if let (Some(fingerprint), Some((commits, has_more, default_branch))) =
+                    (cache_fingerprint, completed)
+                {
+                    let cache_path = repo_path.clone();
+                    cx.background_executor()
+                        .spawn(async move {
+                            if let Err(error) = super::history_cache::store(
+                                &cache_path,
+                                fingerprint,
+                                &commits,
+                                has_more,
+                                default_branch.as_deref(),
+                            ) {
+                                log::debug!("full history cache write skipped: {}", error);
+                            }
+                        })
+                        .await;
+                }
+                Ok(())
             } else {
                 Ok(())
             }

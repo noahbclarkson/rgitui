@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{CommitInfo, RefLabel, Signature};
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(super) struct HydratedHistory {
@@ -401,9 +401,9 @@ mod tests {
     #[test]
     fn pruning_keeps_only_current_generation_for_repo() {
         let temp = tempfile::TempDir::new().unwrap();
-        let old = temp.path().join("v1-abc-111.json");
-        let current = temp.path().join("v1-abc-222.json");
-        let unrelated = temp.path().join("v1-def-111.json");
+        let old = temp.path().join("v2-abc-111.json");
+        let current = temp.path().join("v2-abc-222.json");
+        let unrelated = temp.path().join("v2-def-111.json");
         std::fs::write(&old, b"old").unwrap();
         std::fs::write(&current, b"current").unwrap();
         std::fs::write(&unrelated, b"other").unwrap();
