@@ -11,8 +11,7 @@ use super::argsafe::{validate_branch_name, validate_remote_name};
 use super::auth::run_git_network_command;
 use super::refresh::gather_refresh_data;
 use super::{
-    ensure_clean_worktree, head_branch_name, pull_target, push_target, GitProject, GitProjectEvent,
-    RefreshData,
+    head_branch_name, pull_target, push_target, GitProject, GitProjectEvent, RefreshData,
 };
 
 /// Open the repository handle for a specific working tree. Network operations
@@ -22,6 +21,37 @@ use super::{
 fn open_worktree_repo(worktree_path: &Path) -> Result<Repository> {
     Repository::open(worktree_path)
         .with_context(|| format!("Failed to open worktree at {}", worktree_path.display()))
+}
+
+/// Build pull arguments while preserving the user's configured merge/rebase strategy.
+fn pull_arguments<'a>(remote: &'a str, branch: &'a str, auto_stash: bool) -> Vec<&'a str> {
+    let mut args = vec!["pull"];
+    if auto_stash {
+        args.push("--autostash");
+    }
+    args.extend([remote, branch]);
+    args
+}
+
+#[cfg(test)]
+mod pull_arguments_tests {
+    use super::pull_arguments;
+
+    #[test]
+    fn normal_pull_preserves_git_configuration() {
+        assert_eq!(
+            pull_arguments("origin", "dev", false),
+            vec!["pull", "origin", "dev"]
+        );
+    }
+
+    #[test]
+    fn autostash_does_not_force_rebase() {
+        assert_eq!(
+            pull_arguments("origin", "dev", true),
+            vec!["pull", "--autostash", "origin", "dev"]
+        );
+    }
 }
 
 impl GitProject {
@@ -52,7 +82,29 @@ impl GitProject {
         worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        log::info!("pull_default: worktree={}", worktree_path.display());
+        self.pull_default_with_options_at(worktree_path, false, cx)
+    }
+
+    /// Pull after temporarily saving local modifications with Git AutoStash.
+    pub fn pull_default_with_autostash_at(
+        &mut self,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        self.pull_default_with_options_at(worktree_path, true, cx)
+    }
+
+    fn pull_default_with_options_at(
+        &mut self,
+        worktree_path: &Path,
+        auto_stash: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "pull_default: worktree={} autostash={}",
+            worktree_path.display(),
+            auto_stash
+        );
         let (remote_name, branch_name) =
             match open_worktree_repo(worktree_path).and_then(|repo| pull_target(&repo, None)) {
                 Ok(target) => target,
@@ -67,7 +119,7 @@ impl GitProject {
                     )
                 }
             };
-        self.pull_from_at(&remote_name, &branch_name, worktree_path, cx)
+        self.pull_from_with_options_at(&remote_name, &branch_name, worktree_path, auto_stash, cx)
     }
 
     pub fn push_default_at(
@@ -221,11 +273,23 @@ impl GitProject {
         worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        self.pull_from_with_options_at(remote_name, branch_name, worktree_path, false, cx)
+    }
+
+    fn pull_from_with_options_at(
+        &mut self,
+        remote_name: &str,
+        branch_name: &str,
+        worktree_path: &Path,
+        auto_stash: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         log::info!(
-            "pull_from: remote={} branch={} worktree={}",
+            "pull_from: remote={} branch={} worktree={} autostash={}",
             remote_name,
             branch_name,
-            worktree_path.display()
+            worktree_path.display(),
+            auto_stash
         );
         let remote_name = remote_name.to_string();
         let branch_name = branch_name.to_string();
@@ -251,16 +315,11 @@ impl GitProject {
                 .background_executor()
                 .spawn(async move {
                     let (msg, is_conflict, details) = {
-                        let repo = Repository::open(&task_worktree_path)?;
-                        ensure_clean_worktree(&repo, GitOperationKind::Pull.name())?;
-                        drop(repo);
-
+                        // Let Git reject only changes that would actually be overwritten.
                         validate_remote_name(&task_remote_name)?;
                         validate_branch_name(&task_branch_name)?;
-                        match run_git_network_command(
-                            &task_worktree_path,
-                            &["pull", &task_remote_name, &task_branch_name],
-                        ) {
+                        let args = pull_arguments(&task_remote_name, &task_branch_name, auto_stash);
+                        match run_git_network_command(&task_worktree_path, &args) {
                             Ok(details) => {
                                 let msg = if details
                                     .as_deref()
@@ -279,15 +338,33 @@ impl GitProject {
                                         remote = &task_remote_name
                                     )
                                 };
-                                (msg, false, details)
+                                // Git AutoStash may report success even if applying
+                                // saved local changes leaves unresolved index entries.
+                                let conflict_count = Repository::open(&task_worktree_path)?
+                                    .index()?
+                                    .conflicts()?
+                                    .count();
+                                if conflict_count > 0 {
+                                    let msg = msgp!(
+                                        "git.pull.conflicts_detail",
+                                        conflict_count,
+                                        remote = &task_remote_name,
+                                        branch = &task_branch_name
+                                    );
+                                    (msg, true, details)
+                                } else {
+                                    (msg, false, details)
+                                }
                             }
                             Err(e) => {
                                 let error_msg = e.to_string();
-                                if error_msg.contains("CONFLICT")
+                                let repo = Repository::open(&task_worktree_path)?;
+                                let conflict_count = repo.index()?.conflicts()?.count();
+                                if conflict_count > 0
+                                    || error_msg.contains("CONFLICT")
                                     || error_msg.contains("Automatic merge failed")
+                                    || error_msg.contains("Applying autostash resulted in conflicts")
                                 {
-                                    let repo = Repository::open(&task_worktree_path)?;
-                                    let conflict_count = repo.index()?.conflicts()?.count();
                                     let msg = msgp!(
                                         "git.pull.conflicts_detail",
                                         conflict_count,

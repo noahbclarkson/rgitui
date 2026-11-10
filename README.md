@@ -47,7 +47,7 @@
 | **Branches** | Create, checkout, rename, delete, switch |
 | **Tags** | Create (annotated & lightweight), delete, checkout |
 | **Stash** | Save, pop, apply, drop, create branch from stash |
-| **Remote** | Fetch, pull, push, force push; multi-remote support |
+| **Remote** | Fetch, pull, optional Pull with AutoStash (command palette), push, force push; multi-remote support |
 | **Merge** | Merge with conflict detection; per-conflict three-way resolver, whole-side choices, and editor handoff |
 | **Rebase** | Interactive rebase with pick / squash / reword / fixup / drop |
 | **Bisect** | Start, good, bad, skip, reset |

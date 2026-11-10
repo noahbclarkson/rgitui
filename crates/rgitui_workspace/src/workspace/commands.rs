@@ -459,6 +459,12 @@ impl Workspace {
                     proj.pull_default_at(&worktree_path, cx).detach();
                 });
             }
+            CommandId::PullWithAutoStash => {
+                let worktree_path = tab.effective_repo_path(cx);
+                tab.project.update(cx, |proj, cx| {
+                    proj.pull_default_with_autostash_at(&worktree_path, cx).detach();
+                });
+            }
             CommandId::Push => {
                 let worktree_path = tab.effective_repo_path(cx);
                 tab.project.update(cx, |proj, cx| {
