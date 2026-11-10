@@ -2482,6 +2482,25 @@ mod commit_log_reuse_tests {
     }
 
     #[test]
+    fn startup_hydrated_history_is_reused_while_file_status_is_refreshed() {
+        let repo = TempRepo::with_commits(3);
+        let initial = gather_refresh_data_internal(repo.path(), false, 10, None, None).unwrap();
+
+        let caches = RefreshCaches::default();
+        caches.seed_hydrated_history(
+            &repo.repo(),
+            10,
+            &initial.recent_commits,
+            initial.has_more_commits,
+        );
+        repo.write_file("edited.txt", "changed\n");
+
+        let refreshed = gather(&repo, &caches, 10);
+        assert!(Arc::ptr_eq(&initial.recent_commits, &refreshed.recent_commits));
+        assert_eq!(refreshed.status.unstaged.len(), 1);
+    }
+
+    #[test]
     fn a_refresh_with_no_ref_moved_reuses_the_commit_list() {
         let repo = TempRepo::with_commits(3);
         let caches = RefreshCaches::default();
