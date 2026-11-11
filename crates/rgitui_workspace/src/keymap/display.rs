@@ -530,12 +530,12 @@ mod tests {
         }
     }
 
-    /// The glyph style exists to match what macOS shows elsewhere, so on macOS
-    /// it must agree with gpui's own rendering for the cases gpui spells with
+    /// The glyph style exists to match what macOS shows elsewhere, so it must
+    /// agree with gpui's own macOS rendering for the cases gpui spells with
     /// glyphs. rgitui extends the set to keys gpui leaves as bare words
-    /// (`enter`, `space`, …), which is why the comparison is limited.
+    /// (`enter`, `space`, …), which is why the comparison is limited. gpui
+    /// takes the OS as an argument, so this runs on every platform.
     #[test]
-    #[cfg(target_os = "macos")]
     fn the_glyph_style_matches_gpui_for_the_keys_gpui_spells_with_glyphs() {
         for source in [
             "cmd-shift-r",
@@ -549,7 +549,12 @@ mod tests {
             let keystroke = gpui::Keystroke::parse(source).expect("the test keystrokes parse");
             assert_eq!(
                 humanize_keystroke(source, KeystrokeStyle::Symbols).as_deref(),
-                Some(keystroke.to_string().as_str()),
+                Some(
+                    keystroke
+                        .display(gpui::OperatingSystem::Mac)
+                        .to_string()
+                        .as_str()
+                ),
                 "{source} drifted from gpui's rendering"
             );
         }
