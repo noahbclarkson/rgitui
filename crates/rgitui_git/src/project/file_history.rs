@@ -79,7 +79,7 @@ pub fn compute_file_history_at(
         commits.push(CommitInfo {
             oid,
             short_id: format!("{:.7}", oid),
-            summary: commit.summary().unwrap_or("").to_string(),
+            summary: commit.summary().ok().flatten().unwrap_or("").to_string(),
             message,
             author: Signature {
                 name: author.name().unwrap_or("").to_string(),

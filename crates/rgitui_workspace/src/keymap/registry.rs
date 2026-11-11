@@ -904,7 +904,7 @@ mod tests {
             // A chord always starts with a modifier in this registry.
             return false;
         };
-        let Ok(keystroke) = gpui::Keystroke::parse(single) else {
+        let Ok(keystroke) = crate::keymap::parse_keystroke(single) else {
             return false;
         };
         let modifiers = keystroke.modifiers;

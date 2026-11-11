@@ -238,7 +238,7 @@ fn resolve_remote_url(repo_path: &Path, args: &[&str]) -> Option<String> {
     let remote_name = extract_remote_name(args)?;
     let repo = git2::Repository::open(repo_path).ok()?;
     let remote = repo.find_remote(&remote_name).ok()?;
-    remote.url().map(|s| s.to_string())
+    remote.url().ok().map(str::to_string)
 }
 
 fn extract_remote_name(args: &[&str]) -> Option<String> {

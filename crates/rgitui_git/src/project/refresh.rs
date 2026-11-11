@@ -266,7 +266,8 @@ fn head_summary(repo: &Repository) -> (Option<String>, bool, Option<git2::Oid>) 
     let branch = if detached {
         None
     } else {
-        head.as_ref().and_then(|h| h.shorthand().map(String::from))
+        head.as_ref()
+            .and_then(|h| h.shorthand().ok().map(String::from))
     };
     let head_oid = head.and_then(|h| h.target());
     (branch, detached, head_oid)
@@ -295,7 +296,14 @@ pub(crate) fn previous_branch(repo: &Repository, current: Option<&str>) -> Optio
     let reflog = repo.reflog("HEAD").ok()?;
     reflog
         .iter()
-        .filter_map(|entry| entry.message().and_then(checkout_source).map(str::to_owned))
+        .filter_map(|entry| {
+            entry
+                .message()
+                .ok()
+                .flatten()
+                .and_then(checkout_source)
+                .map(str::to_owned)
+        })
         .find(|from| {
             Some(from.as_str()) != current
                 && repo.find_branch(from, git2::BranchType::Local).is_ok()
@@ -390,7 +398,7 @@ fn gather_worktrees(repo: &Repository) -> Vec<WorktreeInfo> {
 
     // The linked-worktree registry, shared by every checkout of this repository.
     if let Ok(names) = repo.worktrees() {
-        for name in names.iter().flatten() {
+        for name in names.iter().filter_map(|name| name.ok().flatten()) {
             if name.is_empty() {
                 continue;
             }
@@ -795,7 +803,7 @@ fn gather_refresh_data_internal(
             let author_email = tip_oid.and_then(|oid| {
                 repo.find_commit(oid)
                     .ok()
-                    .and_then(|c| c.author().email().map(String::from))
+                    .and_then(|c| c.author().email().ok().map(String::from))
             });
 
             branches.push(BranchInfo {
@@ -858,12 +866,12 @@ fn gather_refresh_data_internal(
     let mut remotes = Vec::new();
     {
         let remote_names = repo.remotes()?;
-        for name in remote_names.iter().flatten() {
+        for name in remote_names.iter().filter_map(|name| name.ok().flatten()) {
             if let Ok(remote) = repo.find_remote(name) {
                 remotes.push(RemoteInfo {
                     name: name.to_string(),
-                    url: remote.url().map(String::from),
-                    push_url: remote.pushurl().map(String::from),
+                    url: remote.url().ok().map(String::from),
+                    push_url: remote.pushurl().ok().flatten().map(String::from),
                 });
             }
         }
@@ -1004,7 +1012,13 @@ fn gather_refresh_data_internal(
         default_branch: repo
             .find_reference("refs/remotes/origin/HEAD")
             .ok()
-            .and_then(|reference| reference.symbolic_target().map(str::to_owned))
+            .and_then(|reference| {
+                reference
+                    .symbolic_target()
+                    .ok()
+                    .flatten()
+                    .map(str::to_owned)
+            })
             .and_then(|target| {
                 target
                     .strip_prefix("refs/remotes/origin/")

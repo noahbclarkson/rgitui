@@ -28,10 +28,10 @@ todo = "deny"
 
 [workspace.dependencies]
 # GPUI framework (from Zed repository)
-gpui = { git = "https://github.com/zed-industries/zed.git", rev = "24e25552b1259d56a6fdd7956a419ed9e8a1a25e" }
-gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "24e25552b1259d56a6fdd7956a419ed9e8a1a25e", features = ["font-kit", "x11", "wayland"] }
-http_client = { git = "https://github.com/zed-industries/zed.git", rev = "24e25552b1259d56a6fdd7956a419ed9e8a1a25e" }
-reqwest_client = { git = "https://github.com/zed-industries/zed.git", rev = "24e25552b1259d56a6fdd7956a419ed9e8a1a25e" }
+gpui = { git = "https://github.com/zed-industries/zed.git", rev = "985bbf42e684ef5b5a9312a6abf075aeafbaf5b9" }
+gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "985bbf42e684ef5b5a9312a6abf075aeafbaf5b9", features = ["font-kit", "x11", "wayland"] }
+http_client = { git = "https://github.com/zed-industries/zed.git", rev = "985bbf42e684ef5b5a9312a6abf075aeafbaf5b9" }
+reqwest_client = { git = "https://github.com/zed-industries/zed.git", rev = "985bbf42e684ef5b5a9312a6abf075aeafbaf5b9" }
 
 # Internal crates
 rgitui_theme = { path = "crates/rgitui_theme" }
@@ -48,7 +48,7 @@ rgitui_i18n = { path = "crates/rgitui_i18n" }
 
 # Core
 anyhow = "1"
-similar = "2.6"
+similar = "2.7"
 log = "0.4"
 env_logger = "0.11"
 serde = { version = "1", features = ["derive"] }
@@ -66,7 +66,7 @@ smallvec = { version = "1", features = ["union"] }
 # `rgitui_git::project::auth`), so libgit2's own transports are never used.
 # Disabling default features drops the transitive libssh2-sys and openssl-sys
 # C builds along with their CVE surface.
-git2 = { version = "0.20", default-features = false }
+git2 = { version = "0.21", default-features = false }
 
 # Async
 futures = "0.3"
@@ -87,14 +87,14 @@ cap-std = "4.0.3"
 cap-fs-ext = "4.0.3"
 dirs = "6"
 uuid = { version = "1", features = ["v4"] }
-md5 = "0.7"
+md5 = "0.8"
 rust-embed = { version = "8", features = ["include-exclude"] }
 semver = "1"
 urlencoding = "2"
 
 [patch.crates-io]
-async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
-calloop = { git = "https://github.com/zed-industries/calloop" }
+async-task = { git = "https://github.com/zed-industries/async-task.git", rev = "015845a19fc31752c02367567d3b8900a406f9da" }
+calloop = { git = "https://github.com/zed-industries/calloop", rev = "3759371fee14c40066d64777e2a36b6ffcc22590" }
 
 [profile.dev]
 incremental = true

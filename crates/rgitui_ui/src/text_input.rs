@@ -327,7 +327,7 @@ impl TextInput {
         }
 
         let key = event.keystroke.key.as_str();
-        let primary = event.keystroke.modifiers.secondary();
+        let primary = event.keystroke.modifiers.secondary(cx);
         let shift = event.keystroke.modifiers.shift;
 
         match key {

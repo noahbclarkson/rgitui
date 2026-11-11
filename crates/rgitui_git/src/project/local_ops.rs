@@ -2399,7 +2399,7 @@ impl GitProject {
                     let repo = Repository::open(&worktree_path)?;
                     ensure_clean_worktree(&repo, GitOperationKind::Revert.name())?;
                     let commit = repo.find_commit(oid)?;
-                    let summary = commit.summary().unwrap_or("").to_string();
+                    let summary = commit.summary().ok().flatten().unwrap_or("").to_string();
                     let mut opts = git2::RevertOptions::new();
                     repo.revert(&commit, Some(&mut opts))?;
                     let has_conflicts = repo.index()?.has_conflicts();
@@ -2489,7 +2489,7 @@ impl GitProject {
                     let repo = Repository::open(&worktree_path)?;
                     ensure_clean_worktree(&repo, GitOperationKind::CherryPick.name())?;
                     let commit = repo.find_commit(oid)?;
-                    let summary = commit.summary().unwrap_or("").to_string();
+                    let summary = commit.summary().ok().flatten().unwrap_or("").to_string();
                     let mut opts = git2::CherrypickOptions::new();
                     repo.cherrypick(&commit, Some(&mut opts))?;
                     let has_conflicts = repo.index()?.has_conflicts();
@@ -3942,7 +3942,7 @@ fn write_conflict_index_resolution(
     let git_path = file_path.as_os_str().as_encoded_bytes().to_vec();
 
     let mut input = Vec::new();
-    write!(input, "0 {}\t", git2::Oid::zero())?;
+    write!(input, "0 {}\t", git2::Oid::ZERO_SHA1)?;
     input.extend_from_slice(&git_path);
     input.push(0);
     if let Some((mode, oid)) = resolved {
@@ -7283,7 +7283,7 @@ mod tests {
         let repo = git2::Repository::open(path).unwrap();
         assert_eq!(repo.state(), git2::RepositoryState::Clean);
         let head = repo.head().unwrap().peel_to_commit().unwrap();
-        assert_eq!(head.summary(), Some("feature change"));
+        assert_eq!(head.summary().unwrap(), Some("feature change"));
     }
 
     #[test]
@@ -7522,7 +7522,7 @@ mod tests {
         // Get stash OID using a separate repo instance for stash_foreach
         let stash_oid = {
             let mut r = git2::Repository::open(path).unwrap();
-            let mut found = git2::Oid::zero();
+            let mut found = git2::Oid::ZERO_SHA1;
             r.stash_foreach(|_i, _msg, oid| {
                 found = *oid;
                 false
@@ -7915,7 +7915,10 @@ mod tests {
         repo.tag_lightweight("v2.0.0", &obj, false).unwrap();
 
         let tag_names = repo.tag_names(None).unwrap();
-        let tags: Vec<_> = tag_names.iter().flatten().collect();
+        let tags: Vec<_> = tag_names
+            .iter()
+            .filter_map(|name| name.ok().flatten())
+            .collect();
         assert!(tags.contains(&"v1.0.0"));
         assert!(tags.contains(&"v1.0.1"));
         assert!(tags.contains(&"v2.0.0"));
@@ -8185,7 +8188,7 @@ mod tests {
 
         assert_ne!(new_oid, head);
         let new_commit = repo.find_commit(new_oid).unwrap();
-        assert_eq!(new_commit.summary().unwrap(), "add file.txt");
+        assert_eq!(new_commit.summary().unwrap(), Some("add file.txt"));
     }
 
     #[test]
@@ -8226,7 +8229,7 @@ mod tests {
         let amended = repo
             .find_commit(repo.head().unwrap().target().unwrap())
             .unwrap();
-        assert_eq!(amended.summary().unwrap(), "updated message");
+        assert_eq!(amended.summary().unwrap(), Some("updated message"));
     }
 
     #[test]

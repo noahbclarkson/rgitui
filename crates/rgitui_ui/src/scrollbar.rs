@@ -219,14 +219,6 @@ pub struct ScrollbarPrepaint {
     empty: bool,
 }
 
-impl<H: ScrollableHandle> gpui::IntoElement for Scrollbar<H> {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
 impl<H: ScrollableHandle> Element for Scrollbar<H> {
     type RequestLayoutState = ();
     type PrepaintState = Option<ScrollbarPrepaint>;

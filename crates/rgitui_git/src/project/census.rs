@@ -151,7 +151,7 @@ mod tests {
         let mut project = project();
         project.tags = vec![TagInfo {
             name: LONG_NAME.to_string(),
-            oid: git2::Oid::zero(),
+            oid: git2::Oid::ZERO_SHA1,
             message: None,
         }];
 
@@ -188,7 +188,7 @@ mod tests {
     fn a_snapshot_reached_twice_is_charged_to_the_first_path_only() {
         let mut project = project();
         project.recent_commits = Arc::new(vec![CommitInfo {
-            oid: git2::Oid::zero(),
+            oid: git2::Oid::ZERO_SHA1,
             short_id: "abc1234".to_string(),
             summary: LONG_NAME.to_string(),
             message: LONG_NAME.to_string(),

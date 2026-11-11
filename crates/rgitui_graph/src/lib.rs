@@ -2781,7 +2781,7 @@ impl Render for GraphView {
                                                 cx.emit(GraphViewEvent::CommitActivated(oid));
                                             } else if modifiers.shift {
                                                 this.extend_selection_to_list_index(i, cx);
-                                            } else if modifiers.secondary() {
+                                            } else if modifiers.secondary(cx) {
                                                 this.toggle_selection_at_list_index(i, cx);
                                             } else {
                                                 this.select_list_index(i, cx);

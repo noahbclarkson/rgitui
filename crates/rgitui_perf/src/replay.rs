@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     px, AsyncWindowContext, BorrowAppContext as _, Keystroke, Modifiers, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Point, ScrollDelta,
-    ScrollWheelEvent, TouchPhase, Window,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Point, ScrollDelta, ScrollEvent,
+    ScrollSource, TouchPhase, Window,
 };
 
 use crate::driver::{Condition, Scenario, Settle, Step};
@@ -101,7 +101,8 @@ async fn execute(step: &Step, cx: &mut AsyncWindowContext) -> anyhow::Result<()>
             repeat,
             settle,
         } => {
-            let keystroke = Keystroke::parse(key)
+            let keystroke = cx
+                .update(|_, cx| Keystroke::parse_with_os(key, cx.platform_info().os))?
                 .map_err(|error| anyhow::anyhow!("cannot parse keystroke {key:?}: {error}"))?;
             let mut pacer = Pacer::new(*settle);
             for _ in 0..*repeat {
@@ -124,11 +125,12 @@ async fn execute(step: &Step, cx: &mut AsyncWindowContext) -> anyhow::Result<()>
             for _ in 0..*repeat {
                 cx.update(|window, cx| {
                     window.dispatch_event(
-                        PlatformInput::ScrollWheel(ScrollWheelEvent {
+                        PlatformInput::Scroll(ScrollEvent {
                             position,
                             delta: ScrollDelta::Pixels(Point::new(px(0.0), px(*delta_y))),
                             modifiers: Modifiers::default(),
                             touch_phase: TouchPhase::Moved,
+                            source: ScrollSource::Pointer,
                         }),
                         cx,
                     );
@@ -459,7 +461,7 @@ fn dirty_tracked_files(repo_path: &std::path::Path, count: usize) -> anyhow::Res
             return git2::TreeWalkResult::Abort;
         }
         if entry.kind() == Some(git2::ObjectType::Blob) {
-            if let Some(name) = entry.name() {
+            if let Ok(name) = entry.name() {
                 paths.push(format!("{dir}{name}"));
             }
         }

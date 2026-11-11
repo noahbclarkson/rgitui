@@ -312,8 +312,8 @@ mod tests {
         let repo = TempRepo::with_commits(2);
         let tip = repo.repo().find_commit(repo.head_oid()).unwrap();
 
-        assert_eq!(tip.author().name(), Some(TempRepo::AUTHOR_NAME));
-        assert_eq!(tip.author().email(), Some(TempRepo::AUTHOR_EMAIL));
+        assert_eq!(tip.author().name().unwrap(), TempRepo::AUTHOR_NAME);
+        assert_eq!(tip.author().email().unwrap(), TempRepo::AUTHOR_EMAIL);
         // Second of two commits, so one second past the fixed start.
         assert_eq!(tip.time().seconds(), FIRST_COMMIT_TIME + 1);
         assert_eq!(tip.parent(0).unwrap().time().seconds(), FIRST_COMMIT_TIME);

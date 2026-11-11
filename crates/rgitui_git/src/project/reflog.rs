@@ -40,7 +40,7 @@ pub fn compute_reflog(repo_path: &Path, ref_name: &str) -> Result<Vec<ReflogEntr
         let old_oid = entry.id_old();
 
         // Check for zero OID (initial entry or special cases)
-        let zero_oid = git2::Oid::zero();
+        let zero_oid = git2::Oid::ZERO_SHA1;
         let old_short_id = if old_oid == zero_oid {
             String::new()
         } else {
@@ -58,7 +58,7 @@ pub fn compute_reflog(repo_path: &Path, ref_name: &str) -> Result<Vec<ReflogEntr
             old_oid,
             new_short_id: format!("{:.7}", new_oid),
             old_short_id,
-            message: entry.message().map(str::to_string),
+            message: entry.message().ok().flatten().map(str::to_string),
             committer: committer_sig.name().unwrap_or("unknown").to_string(),
             time,
         });

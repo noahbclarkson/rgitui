@@ -126,7 +126,7 @@ fn parse_porcelain_blame(output: &str) -> Result<Vec<BlameLine>> {
             None => (String::new(), String::new(), Utc::now()),
         };
 
-        let oid = git2::Oid::from_str(oid_str).unwrap_or(git2::Oid::zero());
+        let oid = git2::Oid::from_str(oid_str).unwrap_or(git2::Oid::ZERO_SHA1);
         let short_id = oid_str[..7.min(oid_str.len())].to_string();
 
         result.push(BlameLine {

@@ -337,7 +337,7 @@ fn parse_keystrokes(keystrokes: &str) -> Result<(), String> {
         return Err("the keystroke is empty.".to_owned());
     }
     for keystroke in keystrokes.split_whitespace() {
-        gpui::Keystroke::parse(keystroke).map_err(|error| error.to_string())?;
+        super::parse_keystroke(keystroke).map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -410,7 +410,7 @@ fn build_bindings(
             context,
             entry.use_key_equivalents,
             input,
-            cx.keyboard_mapper().as_ref(),
+            cx,
         ) {
             Ok(binding) => bindings.push(binding),
             Err(error) => problems.push(format!(
@@ -456,7 +456,7 @@ mod tests {
         for spec in default_specs() {
             for keystroke in spec.keystrokes.split_whitespace() {
                 assert!(
-                    gpui::Keystroke::parse(keystroke).is_ok(),
+                    crate::keymap::parse_keystroke(keystroke).is_ok(),
                     "default keystroke `{keystroke}` for {} does not parse",
                     spec.action
                 );
