@@ -674,7 +674,7 @@ impl Render for Picker {
             // keeps it from the page. A list with nothing to scroll lets the
             // wheel through.
             .when(entry_count > MAX_VISIBLE_ROWS, |list| {
-                list.on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                list.on_scroll(|_, _, cx| cx.stop_propagation())
             })
             .into_any_element()
         } else {

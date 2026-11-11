@@ -88,7 +88,9 @@ pub(super) fn ref_state_fingerprint(repo: &Repository) -> u64 {
     head.as_ref()
         .and_then(|head| head.target())
         .hash(&mut hasher);
-    head.as_ref().and_then(|head| head.name()).hash(&mut hasher);
+    head.as_ref()
+        .and_then(|head| head.name().ok())
+        .hash(&mut hasher);
     repo.head_detached().unwrap_or(false).hash(&mut hasher);
     refs.hash(&mut hasher);
     hasher.finish()

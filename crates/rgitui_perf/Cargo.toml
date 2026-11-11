@@ -15,10 +15,9 @@ path = "src/main.rs"
 # Off by default: with no features the public API is inlined no-ops, so call
 # sites in the app need no `#[cfg]` and the shipped binary carries none of this.
 default = []
-# Turns on gpui's own task-timing profiler, which is opt-in upstream: without
-# it gpui records nothing and allocates nothing for it. Reached only through
-# `rgitui/perf`, so a normal build leaves it off and pays nothing.
-enabled = ["gpui/profiler"]
+# Arms the session at startup. Reached only through `rgitui/perf`, which is also
+# the only way this crate gets linked into the app.
+enabled = []
 # Allocation-site heap profiling. Costs roughly 100x runtime, so a session that enables
 # it refuses to also collect frame timings.
 dhat-heap = ["enabled", "dep:dhat"]
@@ -28,7 +27,10 @@ dhat-heap = ["enabled", "dep:dhat"]
 tracy = ["enabled", "profiling/profile-with-tracy"]
 
 [dependencies]
-gpui.workspace = true
+# gpui's task and frame profiler is opt-in upstream, and the frame timings the
+# session drains exist only with it. This crate is linked into the app only by
+# `rgitui/perf`, so a normal build of the app leaves the profiler off.
+gpui = { workspace = true, features = ["profiler"] }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
@@ -47,4 +49,4 @@ tempfile.workspace = true
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_Performance", "Win32_System_SystemInformation", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_Diagnostics_ToolHelp", "Win32_Graphics_Gdi", "Win32_System_Diagnostics_Debug", "Win32_System_WindowsProgramming", "Win32_System_Kernel", "Win32_Security"] }
 
 [target."cfg(not(windows))".dependencies]
-sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }

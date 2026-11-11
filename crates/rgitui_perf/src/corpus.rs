@@ -337,7 +337,7 @@ fn restore(root: &Path) -> anyhow::Result<()> {
         if !entry.status().contains(git2::Status::WT_NEW) {
             continue;
         }
-        let Some(path) = entry.path() else { continue };
+        let Ok(path) = entry.path() else { continue };
         let full = workdir.join(path);
         if let Err(error) = std::fs::remove_file(&full) {
             log::warn!("could not remove {}: {error}", full.display());
@@ -1366,7 +1366,7 @@ mod tests {
         );
 
         let head = repo.head().unwrap().peel_to_commit().unwrap();
-        assert_eq!(head.author().name(), Some(AUTHOR_NAME));
+        assert_eq!(head.author().name().unwrap(), AUTHOR_NAME);
         assert_eq!(
             head.time().seconds(),
             FIRST_COMMIT_TIME + recipe.commits as i64 - 1,

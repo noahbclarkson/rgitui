@@ -265,12 +265,11 @@ impl PerfSession {
         // feature, and recording nothing is its whole point when idle: with the
         // flag clear it retains no timings and grows no buffer. Turning it on
         // is therefore part of starting a run, not part of building the binary.
+        // The one flag arms both buffers: task timings say where dispatched work
+        // went, frame timings say what each draw cost. Only the second can see
+        // `Render::render`, layout and paint, which are not tasks and so never
+        // appear in the task table however long they take.
         gpui::profiler::set_trace_enabled(true);
-        // Separate flag, separate ring buffer: task timings say where dispatched
-        // work went, frame timings say what each draw cost. Only the second one
-        // can see `Render::render`, layout and paint, which are not tasks and so
-        // never appear in the task table however long they take.
-        gpui::profiler::set_frame_trace_enabled(true);
 
         let process = match ProcessSampler::new() {
             Ok(sampler) => Some(sampler),
@@ -554,7 +553,10 @@ impl PerfSession {
     /// gpui keeps a bounded ring of them and drops the oldest once it is full,
     /// and the frames worth having are usually the early ones.
     fn drain_frame_timings(&mut self) {
-        for timing in self.frame_timings.collect_unseen() {
+        for event in self.frame_timings.collect_unseen() {
+            let gpui::profiler::FrameEvent::Draw(timing) = event else {
+                continue;
+            };
             self.charge_actions_answered_by(&timing);
             self.draws.record(crate::draw::DrawSample {
                 drawn_at: timing.draw_end,

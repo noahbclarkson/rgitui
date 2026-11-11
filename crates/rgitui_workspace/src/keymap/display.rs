@@ -4,7 +4,7 @@
 //! (`secondary-shift-r`, `ctrl-k ctrl-o`) into the text shown to the user:
 //! `Ctrl+Shift+R` on Windows and Linux, `⌘⇧R` on macOS.
 //!
-//! Parsing is [`gpui::Keystroke::parse`], so `secondary` resolves to the
+//! Parsing is [`super::parse_keystroke`], so `secondary` resolves to the
 //! platform's primary modifier and `shift-g`/`G` normalise the same way the
 //! keymap does — the display can therefore never disagree with what gpui
 //! actually matches. Only the final spelling is ours: gpui's own [`Display`]
@@ -15,7 +15,7 @@
 //!
 //! [`Display`]: std::fmt::Display
 
-use gpui::{Keystroke, Modifiers};
+use gpui::Modifiers;
 
 /// How a keystroke is spelled for the user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,7 +51,7 @@ pub const UNBOUND: &str = "unbound";
 /// Returns `None` when the keystroke does not parse; the loader reports those
 /// separately and they are never applied, so there is nothing to display.
 pub fn humanize_keystroke(source: &str, style: KeystrokeStyle) -> Option<String> {
-    let keystroke = Keystroke::parse(source).ok()?;
+    let keystroke = super::parse_keystroke(source).ok()?;
     Some(render(&keystroke.modifiers, &keystroke.key, style))
 }
 
@@ -546,7 +546,7 @@ mod tests {
             "shift-tab",
             "j",
         ] {
-            let keystroke = Keystroke::parse(source).expect("the test keystrokes parse");
+            let keystroke = gpui::Keystroke::parse(source).expect("the test keystrokes parse");
             assert_eq!(
                 humanize_keystroke(source, KeystrokeStyle::Symbols).as_deref(),
                 Some(keystroke.to_string().as_str()),

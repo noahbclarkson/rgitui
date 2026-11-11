@@ -435,7 +435,7 @@ mod tests {
         let entry = StashEntry {
             index: 0,
             message: "WIP on main: abc1234".into(),
-            oid: git2::Oid::zero(),
+            oid: git2::Oid::ZERO_SHA1,
         };
         let clone = entry.clone();
         assert_eq!(entry, clone);
@@ -446,12 +446,12 @@ mod tests {
         let e0 = StashEntry {
             index: 0,
             message: "stash 0".into(),
-            oid: git2::Oid::zero(),
+            oid: git2::Oid::ZERO_SHA1,
         };
         let e1 = StashEntry {
             index: 1,
             message: "stash 0".into(),
-            oid: git2::Oid::zero(),
+            oid: git2::Oid::ZERO_SHA1,
         };
         assert_ne!(e0.index, e1.index);
         assert_ne!(e0, e1);
@@ -462,12 +462,12 @@ mod tests {
         let e0 = StashEntry {
             index: 0,
             message: "WIP on main".into(),
-            oid: git2::Oid::zero(),
+            oid: git2::Oid::ZERO_SHA1,
         };
         let e1 = StashEntry {
             index: 0,
             message: "WIP on feature".into(),
-            oid: git2::Oid::zero(),
+            oid: git2::Oid::ZERO_SHA1,
         };
         assert_ne!(e0.message, e1.message);
         assert_ne!(e0, e1);
@@ -478,7 +478,7 @@ mod tests {
         let e0 = StashEntry {
             index: 0,
             message: "stash 0".into(),
-            oid: git2::Oid::zero(),
+            oid: git2::Oid::ZERO_SHA1,
         };
         let e1 = StashEntry {
             index: 0,
@@ -494,7 +494,7 @@ mod tests {
         let entry = StashEntry {
             index: 3,
             message: "test".into(),
-            oid: git2::Oid::zero(),
+            oid: git2::Oid::ZERO_SHA1,
         };
         let debug = format!("{:?}", entry);
         assert!(debug.contains("3"));

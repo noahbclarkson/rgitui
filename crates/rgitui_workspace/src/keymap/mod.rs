@@ -33,7 +33,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{App, Global};
+use gpui::{App, Global, InvalidKeystrokeError, Keystroke, OperatingSystem};
 
 pub use display::{humanize_sequence, KeystrokeStyle};
 pub use loader::{ensure_keymap_file, keymap_path, keymap_stub};
@@ -41,6 +41,27 @@ pub use registry::{actions, attach_actions, CommandId, CommandMeta, ALL_COMMANDS
 pub use summary::{
     CommandBindings, CommandGroup, EffectiveBinding, KeymapNote, KeymapSummary, NoteSeverity,
 };
+
+/// The operating system whose conventions `secondary-` resolves against.
+///
+/// Fixed at compile time, like [`KeystrokeStyle::platform`]: the app only ships
+/// natively, where this is the OS gpui reports at runtime too, so conflict
+/// detection and labels agree with the bindings gpui matches.
+const HOST_OS: OperatingSystem = if cfg!(target_os = "macos") {
+    OperatingSystem::Mac
+} else if cfg!(target_os = "windows") {
+    OperatingSystem::Windows
+} else if cfg!(target_os = "freebsd") {
+    OperatingSystem::FreeBsd
+} else {
+    OperatingSystem::Linux
+};
+
+/// Parses one keystroke in keymap syntax, resolving `secondary-` to this
+/// platform's primary modifier.
+pub fn parse_keystroke(source: &str) -> Result<Keystroke, InvalidKeystrokeError> {
+    Keystroke::parse_with_os(source, HOST_OS)
+}
 
 /// Declares a view's key context and attaches the commands it handles.
 ///

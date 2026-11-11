@@ -236,7 +236,7 @@ mod tests {
     fn a_commit_is_charged_for_every_string_it_owns() {
         let mut census = Census::new();
         let commit = CommitInfo {
-            oid: git2::Oid::zero(),
+            oid: git2::Oid::ZERO_SHA1,
             short_id: "abc1234".to_string(),
             summary: "Fix the thing".to_string(),
             message: "Fix the thing\n\nWith detail.".to_string(),
@@ -250,7 +250,7 @@ mod tests {
             },
             co_authors: Vec::new(),
             time: chrono::Utc::now(),
-            parent_oids: vec![git2::Oid::zero()],
+            parent_oids: vec![git2::Oid::ZERO_SHA1],
             refs: vec![RefLabel::LocalBranch("main".to_string())],
             is_signed: false,
         };

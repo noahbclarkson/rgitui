@@ -35,7 +35,7 @@ fn test_git_repo_can_be_opened() {
 
     let repo = git2::Repository::discover(fixture.path()).expect("failed to open git repo");
     let head = repo.head().expect("failed to get HEAD");
-    assert!(head.shorthand().is_some());
+    assert!(head.shorthand().is_ok());
 }
 
 #[test]
@@ -74,7 +74,7 @@ fn test_compute_graph_with_real_commits() {
         commits.push(rgitui_git::CommitInfo {
             oid,
             short_id: oid.to_string()[..7].to_string(),
-            summary: commit.summary().unwrap_or("").to_string(),
+            summary: commit.summary().ok().flatten().unwrap_or("").to_string(),
             message: commit.message().unwrap_or("").to_string(),
             author: rgitui_git::Signature {
                 name: author_sig.name().unwrap_or("").to_string(),
@@ -248,7 +248,12 @@ fn commit_to_commit_info(commit: &git2::Commit) -> rgitui_git::CommitInfo {
     rgitui_git::CommitInfo {
         oid: commit.id(),
         short_id: commit.id().to_string()[..7].to_string(),
-        summary: commit.summary().unwrap_or_default().to_string(),
+        summary: commit
+            .summary()
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+            .to_string(),
         message: commit.message().unwrap_or_default().to_string(),
         author: rgitui_git::Signature {
             name: author_sig.name().unwrap_or_default().to_string(),

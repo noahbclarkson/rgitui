@@ -184,7 +184,11 @@ impl From<Keystroke> for NormalizedKeystroke {
 pub fn normalize_sequence(keystrokes: &str) -> Option<Vec<NormalizedKeystroke>> {
     let sequence: Vec<NormalizedKeystroke> = keystrokes
         .split_whitespace()
-        .map(|source| Keystroke::parse(source).ok().map(NormalizedKeystroke::from))
+        .map(|source| {
+            super::parse_keystroke(source)
+                .ok()
+                .map(NormalizedKeystroke::from)
+        })
         .collect::<Option<_>>()?;
     (!sequence.is_empty()).then_some(sequence)
 }
