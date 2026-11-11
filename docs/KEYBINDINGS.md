@@ -42,6 +42,7 @@ The file is reloaded when you save it. Bindings you add win over the defaults. T
 | --- | --- | --- | --- |
 | `secondary-shift-r` | `Workspace && !modal` | `rgitui::Fetch` | Download objects and refs from the tracked remote. |
 | _unbound_ | — | `rgitui::Pull` | Fetch from and integrate with the tracked remote branch. |
+| _unbound_ | — | `rgitui::PullAutostash` | Pull, stashing uncommitted changes first and reapplying them after. |
 | _unbound_ | — | `rgitui::Push` | Update the remote ref along with associated objects. |
 | _unbound_ | — | `rgitui::PushAll` | Push every open repository. |
 | _unbound_ | — | `rgitui::PullAll` | Pull every open repository. |

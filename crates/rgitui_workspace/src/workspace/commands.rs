@@ -1,6 +1,7 @@
 use gpui::{BorrowAppContext, Context, Window};
 
 use crate::{CommandId, CommitPanelEvent, ConfirmAction, ToastKind};
+use rgitui_git::PullLocalChanges;
 
 use super::layout::{MAX_DETAIL_PANEL_WIDTH, MIN_DETAIL_PANEL_WIDTH};
 use super::{
@@ -382,10 +383,12 @@ impl Workspace {
                     ToastKind::Info,
                     cx,
                 );
+                let local_changes = Self::pull_local_changes_setting(cx);
                 for tab in &self.tabs {
                     let worktree_path = tab.effective_repo_path(cx);
                     tab.project.update(cx, |proj, cx| {
-                        proj.pull_default_at(&worktree_path, cx).detach();
+                        proj.pull_default_at(local_changes, &worktree_path, cx)
+                            .detach();
                     });
                 }
             }
@@ -454,9 +457,18 @@ impl Workspace {
                 });
             }
             CommandId::Pull => {
+                let local_changes = Self::pull_local_changes_setting(cx);
                 let worktree_path = tab.effective_repo_path(cx);
                 tab.project.update(cx, |proj, cx| {
-                    proj.pull_default_at(&worktree_path, cx).detach();
+                    proj.pull_default_at(local_changes, &worktree_path, cx)
+                        .detach();
+                });
+            }
+            CommandId::PullAutostash => {
+                let worktree_path = tab.effective_repo_path(cx);
+                tab.project.update(cx, |proj, cx| {
+                    proj.pull_default_at(PullLocalChanges::Autostash, &worktree_path, cx)
+                        .detach();
                 });
             }
             CommandId::Push => {

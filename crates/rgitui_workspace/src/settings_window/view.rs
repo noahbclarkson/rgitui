@@ -22,7 +22,7 @@ use rgitui_ai::catalog::{CatalogSource, ModelInfo};
 use rgitui_i18n::{key, t, tp};
 use rgitui_settings::{
     config_dir, AiProvider, AppearanceMode, AutoFetchInterval, Compactness, DiffViewMode,
-    GitProviderSettings, GraphStyle, SettingsState,
+    GitProviderSettings, GraphStyle, PullLocalChanges, SettingsState,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt, ThemeState};
 use rgitui_ui::{
@@ -451,6 +451,7 @@ pub struct SettingsView {
     graph_style: GraphStyle,
     show_subject_column: bool,
     auto_fetch_interval: AutoFetchInterval,
+    pull_local_changes: PullLocalChanges,
     confirm_destructive_operations: bool,
     auto_check_updates: bool,
     watch_all_worktrees: bool,
@@ -1028,6 +1029,7 @@ impl SettingsView {
             show_subject_column: settings.show_subject_column,
             auto_fetch_interval: settings.auto_fetch_interval,
             auto_fetch_select,
+            pull_local_changes: settings.pull_local_changes,
             confirm_destructive_operations: settings.confirm_destructive_operations,
             auto_check_updates: settings.auto_check_updates,
             watch_all_worktrees: settings.watch_all_worktrees,
@@ -1108,6 +1110,7 @@ impl SettingsView {
                 self.graph_style = s.graph_style;
                 self.show_subject_column = s.show_subject_column;
                 self.auto_fetch_interval = s.auto_fetch_interval;
+                self.pull_local_changes = s.pull_local_changes;
                 self.confirm_destructive_operations = s.confirm_destructive_operations;
                 self.auto_check_updates = s.auto_check_updates;
                 self.watch_all_worktrees = s.watch_all_worktrees;
@@ -1370,6 +1373,7 @@ impl SettingsView {
             state.settings_mut().graph_style = self.graph_style;
             state.settings_mut().show_subject_column = self.show_subject_column;
             state.settings_mut().auto_fetch_interval = self.auto_fetch_interval;
+            state.settings_mut().pull_local_changes = self.pull_local_changes;
             state.settings_mut().confirm_destructive_operations =
                 self.confirm_destructive_operations;
             state.settings_mut().auto_check_updates = self.auto_check_updates;
@@ -3858,6 +3862,42 @@ impl SettingsView {
                 .child(self.auto_fetch_select.clone()),
         );
         section = section.child(fetch_card);
+
+        // Pull with uncommitted changes card
+        let mut pull_card = Self::setting_card(cx);
+        pull_card = pull_card.child(
+            div()
+                .v_flex()
+                .gap(px(8.))
+                .child(Self::setting_label(
+                    t!("settings.pull_local_changes.title"),
+                    t!("settings.pull_local_changes.description"),
+                ))
+                .child(self.pill_group(
+                    "pull-local-changes",
+                    &[
+                        (
+                            PullLocalChanges::GitDecides,
+                            t!("settings.pull_local_changes.git_decides"),
+                        ),
+                        (
+                            PullLocalChanges::Autostash,
+                            t!("settings.pull_local_changes.autostash"),
+                        ),
+                        (
+                            PullLocalChanges::RequireClean,
+                            t!("settings.pull_local_changes.require_clean"),
+                        ),
+                    ],
+                    self.pull_local_changes,
+                    |this, value, cx| {
+                        this.pull_local_changes = value;
+                        this.save_settings(cx);
+                    },
+                    cx,
+                )),
+        );
+        section = section.child(pull_card);
 
         // Confirm destructive operations card
         let confirm_destructive = self.confirm_destructive_operations;

@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, SharedString};
-use rgitui_git::{GitOperationKind, GitOperationUpdate};
+use rgitui_git::{GitOperationKind, GitOperationUpdate, PullAttempt, PullLocalChanges};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize};
 
@@ -160,9 +160,20 @@ impl Workspace {
         Some(bar.into_any_element())
     }
 
+    /// What Pull does about uncommitted changes, as chosen in Settings.
+    pub(super) fn pull_local_changes_setting(cx: &gpui::App) -> PullLocalChanges {
+        cx.try_global::<rgitui_settings::SettingsState>()
+            .map(|state| state.settings().pull_local_changes)
+            .unwrap_or_default()
+    }
+
+    /// Run a failed operation again. `with_autostash` repeats a pull with
+    /// autostash whatever it was first run with — the banner offers that when
+    /// uncommitted changes are what stopped it.
     pub(super) fn retry_git_operation(
         &mut self,
         update: &GitOperationUpdate,
+        with_autostash: bool,
         cx: &mut Context<Self>,
     ) {
         let Some(project) = self.active_project().cloned() else {
@@ -181,6 +192,12 @@ impl Workspace {
             .clone()
             .unwrap_or_else(|| self.effective_worktree_path(cx));
 
+        let local_changes = retry_pull_local_changes(
+            update.pull,
+            Self::pull_local_changes_setting(cx),
+            with_autostash,
+        );
+
         let handled = project.update(cx, |proj, cx| match update.kind {
             GitOperationKind::Fetch => {
                 if let Some(remote_name) = update.remote_name.as_deref() {
@@ -193,10 +210,12 @@ impl Workspace {
             }
             GitOperationKind::Pull => {
                 if let Some(remote_name) = update.remote_name.as_deref() {
-                    proj.pull_at(remote_name, &worktree_path, cx).detach();
+                    proj.pull_at(remote_name, local_changes, &worktree_path, cx)
+                        .detach();
                     true
                 } else {
-                    proj.pull_default_at(&worktree_path, cx).detach();
+                    proj.pull_default_at(local_changes, &worktree_path, cx)
+                        .detach();
                     true
                 }
             }
@@ -247,5 +266,80 @@ impl Workspace {
         } else {
             self.operations.last_failed_git_operation = None;
         }
+    }
+}
+
+/// How a retried pull should treat uncommitted changes.
+///
+/// A pull that ran with autostash is retried with it: the user may have asked
+/// for it explicitly, against the setting, and a pull lost to a timeout should
+/// not come back as a plain one that their changes then block. Anything else
+/// follows the setting as it stands now, so changing it and pressing Retry
+/// does what was just chosen.
+fn retry_pull_local_changes(
+    attempt: Option<PullAttempt>,
+    setting: PullLocalChanges,
+    with_autostash: bool,
+) -> PullLocalChanges {
+    let ran_with_autostash =
+        attempt.is_some_and(|attempt| attempt.local_changes == PullLocalChanges::Autostash);
+    if with_autostash || ran_with_autostash {
+        PullLocalChanges::Autostash
+    } else {
+        setting
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn attempt(local_changes: PullLocalChanges) -> Option<PullAttempt> {
+        Some(PullAttempt {
+            local_changes,
+            blocked_by_local_changes: false,
+        })
+    }
+
+    #[test]
+    fn a_pull_that_ran_with_autostash_is_retried_with_it() {
+        assert_eq!(
+            retry_pull_local_changes(
+                attempt(PullLocalChanges::Autostash),
+                PullLocalChanges::RequireClean,
+                false
+            ),
+            PullLocalChanges::Autostash,
+            "an explicit autostash pull must not be retried as the setting's plain one"
+        );
+    }
+
+    #[test]
+    fn any_other_pull_is_retried_with_the_setting_as_it_stands() {
+        for ran_with in [
+            None,
+            attempt(PullLocalChanges::GitDecides),
+            attempt(PullLocalChanges::RequireClean),
+        ] {
+            for setting in [
+                PullLocalChanges::GitDecides,
+                PullLocalChanges::Autostash,
+                PullLocalChanges::RequireClean,
+            ] {
+                assert_eq!(retry_pull_local_changes(ran_with, setting, false), setting);
+            }
+        }
+    }
+
+    #[test]
+    fn retrying_with_autostash_overrides_the_setting() {
+        assert_eq!(
+            retry_pull_local_changes(
+                attempt(PullLocalChanges::RequireClean),
+                PullLocalChanges::RequireClean,
+                true
+            ),
+            PullLocalChanges::Autostash
+        );
     }
 }

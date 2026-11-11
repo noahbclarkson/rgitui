@@ -303,6 +303,13 @@ pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
         )
         .with_predicate(has_remotes),
         PaletteCommand::new(
+            CommandId::PullAutostash,
+            "Git: Pull with AutoStash",
+            Some("Stash uncommitted changes, pull, then reapply them"),
+            "Git",
+        )
+        .with_predicate(has_remotes),
+        PaletteCommand::new(
             CommandId::Push,
             "Git: Push",
             Some("Update remote refs along with associated objects"),

@@ -532,6 +532,9 @@ impl Render for Workspace {
                 IconName::Refresh
             };
             let details = update.details.clone();
+            let offers_autostash = update
+                .pull
+                .is_some_and(|pull| pull.blocked_by_local_changes);
 
             Some(
                 div()
@@ -570,14 +573,32 @@ impl Render for Workspace {
                                 )
                             }),
                     )
+                    // A pull stopped by uncommitted changes fails the same way
+                    // however often it is retried, so the banner leads with the
+                    // one retry that gets past them.
+                    .when(is_failure && offers_autostash, |el| {
+                        let retry_update = update.clone();
+                        el.child(
+                            Button::new("operation-pull-autostash", t!("common.pull_autostash"))
+                                .size(ButtonSize::Compact)
+                                .style(ButtonStyle::Filled)
+                                .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+                                    this.retry_git_operation(&retry_update, true, cx);
+                                })),
+                        )
+                    })
                     .when(is_failure && update.retryable, |el| {
                         let retry_update = update.clone();
                         el.child(
                             Button::new("operation-retry", t!("common.retry"))
                                 .size(ButtonSize::Compact)
-                                .style(ButtonStyle::Filled)
+                                .style(if offers_autostash {
+                                    ButtonStyle::Outlined
+                                } else {
+                                    ButtonStyle::Filled
+                                })
                                 .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
-                                    this.retry_git_operation(&retry_update, cx);
+                                    this.retry_git_operation(&retry_update, false, cx);
                                 })),
                         )
                     })
