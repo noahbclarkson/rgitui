@@ -1,3 +1,46 @@
+## [Unreleased]
+
+### Added
+
+- **Pull with AutoStash.** *Git: Pull with AutoStash* in the command palette
+  runs the pull with `--autostash`: git stashes your uncommitted changes,
+  integrates the remote branch by merge or rebase as the repository is
+  configured, and puts the changes back. If the pull stops on a conflict, the
+  changes are restored when you continue or abort; if putting them back
+  conflicts, they are kept in the stash list as `autostash` and the banner says
+  so. When a pull is refused because of uncommitted changes, the failure banner
+  offers *Pull with AutoStash* next to *Retry*. (#100)
+- **A setting for what Pull does with uncommitted changes.** *Settings →
+  General → Pull with Uncommitted Changes* chooses between *Let Git decide*
+  (the default), *AutoStash*, which makes every pull an autostash pull, and
+  *Require a clean tree*, which is how Pull behaved before. (#100)
+
+### Changed
+
+- **Pull no longer refuses every working tree with uncommitted changes.** It
+  checked for changes to tracked files before running git and refused if there
+  were any, even when the incoming commits touched other files. Git now makes
+  that call: it pulls past changes the incoming commits do not touch, and
+  refuses, changing nothing, when one would be overwritten. The failure names
+  the files in the way. Git's own `merge.autoStash` and `rebase.autoStash`
+  settings now take effect, since the pull reaches git. (#100)
+
+### Fixed
+
+- **Aborting a rebase left HEAD detached.** *Abort* reset the working tree to
+  wherever the rebase had stopped and cleared its state, which left HEAD
+  detached on that commit instead of back on the branch. A rebase is now
+  aborted by `git rebase --abort`, which returns to the branch as it was.
+  (#100)
+- **Changes git had autostashed were stranded when rgitui finished the
+  operation.** Concluding a merge or aborting any operation in rgitui skipped
+  the step where git reapplies an autostash made by `git pull --autostash`,
+  `git merge --autostash` or `git rebase --autostash`, in rgitui or in a
+  terminal, so the changes stayed out of the working tree and out of the stash
+  list. *Continue*, *Abort* and committing a merge now put them back, and a
+  reset made while the operation is stopped moves them to the stash list
+  first. (#100)
+
 ## [0.5.1] - 2026-11-05
 
 A localization and performance release. The interface can be shown in another

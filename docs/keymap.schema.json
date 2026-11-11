@@ -69,6 +69,10 @@
           "description": "Fetch from and integrate with the tracked remote branch. Command id: `pull`."
         },
         {
+          "const": "rgitui::PullAutostash",
+          "description": "Pull, stashing uncommitted changes first and reapplying them after. Command id: `pull_autostash`."
+        },
+        {
           "const": "rgitui::Push",
           "description": "Update the remote ref along with associated objects. Command id: `push`."
         },

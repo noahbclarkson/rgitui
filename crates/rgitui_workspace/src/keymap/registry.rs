@@ -74,6 +74,8 @@ commands! {
         Fetch "secondary-shift-r" if has_remotes;
         /// Fetch from and integrate with the tracked remote branch.
         Pull unbound if has_remotes;
+        /// Pull, stashing uncommitted changes first and reapplying them after.
+        PullAutostash unbound if has_remotes;
         /// Update the remote ref along with associated objects.
         Push unbound if has_remotes;
         /// Push every open repository.

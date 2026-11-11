@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use rgitui_i18n::{msg, Message};
+pub use rgitui_settings::PullLocalChanges;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -669,6 +670,20 @@ pub struct GitOperationUpdate {
     /// where the failure is a timeout or a rejected push, is the normal case.
     pub worktree_path: Option<std::path::PathBuf>,
     pub retryable: bool,
+    /// Set on the updates that finish a pull; `None` for everything else.
+    pub pull: Option<PullAttempt>,
+}
+
+/// What a finished pull was asked to do about uncommitted changes, and whether
+/// they are what stopped it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PullAttempt {
+    /// How the pull treated uncommitted changes, so that a pull the user ran
+    /// with autostash is not retried without.
+    pub local_changes: PullLocalChanges,
+    /// The pull was refused because of uncommitted changes to tracked files
+    /// and for no other reason, so the same pull with autostash gets past it.
+    pub blocked_by_local_changes: bool,
 }
 
 #[cfg(test)]
