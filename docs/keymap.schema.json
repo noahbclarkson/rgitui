@@ -357,6 +357,10 @@
           "description": "Open keymap.json in your editor to rebind shortcuts. Command id: `open_keymap`."
         },
         {
+          "const": "rgitui::Quit",
+          "description": "Quit rgitui. Command id: `quit`."
+        },
+        {
           "const": "menu::Cancel",
           "description": "Dismiss the focused overlay, dialog, search or selection. Command id: `cancel`."
         },

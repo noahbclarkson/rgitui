@@ -333,6 +333,10 @@ fn main() {
             .unwrap_or_else(|| rgitui_i18n::SYSTEM_LANGUAGE.to_string());
         rgitui_i18n::init(cx, &saved_language);
 
+        // Quit and the menu bar. After the keymap and translations, which the
+        // menu reads its keystrokes and labels from.
+        rgitui_workspace::app_menu::init(cx);
+
         // Apply saved theme from settings
         let saved_theme = cx
             .try_global::<rgitui_settings::SettingsState>()

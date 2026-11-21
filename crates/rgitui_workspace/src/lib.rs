@@ -1,3 +1,4 @@
+pub mod app_menu;
 pub(crate) mod avatar_resolver;
 mod bisect_view;
 mod blame_view;

@@ -223,6 +223,12 @@ commands! {
         GrowDiffViewer "secondary-down" [hidden];
         /// Open keymap.json in your editor to rebind shortcuts.
         OpenKeymap unbound;
+        // Live in both windows and while a dialog is open, as quitting is on
+        // every platform. The workspace root handles it in the main window; in
+        // the settings window, and from the macOS menu bar when no window has
+        // focus, it reaches the global handler `app_menu::init` installs.
+        /// Quit rgitui.
+        Quit "secondary-q" in "Workspace || SettingsWindow";
     }
 
     // Bound once and handled by whichever element owns the selection or the
@@ -763,6 +769,7 @@ mod tests {
         (CommandId::ToggleStashes, "toggle_stashes"),
         (CommandId::StashBranch, "stash_branch"),
         (CommandId::OpenThemeEditor, "open_theme_editor"),
+        (CommandId::Quit, "quit"),
     ];
 
     #[test]

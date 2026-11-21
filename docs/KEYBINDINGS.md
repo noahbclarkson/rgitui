@@ -114,6 +114,7 @@ The file is reloaded when you save it. Bindings you add win over the defaults. T
 | `secondary-up` | `Workspace && !modal` | `rgitui::ShrinkDiffViewer` | Shorten the diff viewer. |
 | `secondary-down` | `Workspace && !modal` | `rgitui::GrowDiffViewer` | Heighten the diff viewer. |
 | _unbound_ | — | `rgitui::OpenKeymap` | Open keymap.json in your editor to rebind shortcuts. |
+| `secondary-q` | `Workspace \|\| SettingsWindow` | `rgitui::Quit` | Quit rgitui. |
 
 ## Menu
 
