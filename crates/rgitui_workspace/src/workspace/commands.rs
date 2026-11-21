@@ -350,6 +350,7 @@ impl Workspace {
             CommandId::WorkspaceHome => {
                 self.go_home(cx);
             }
+            CommandId::Quit => crate::app::quit(cx),
             CommandId::RestoreLastWorkspace => {
                 self.restore_last_workspace(cx);
             }
@@ -870,6 +871,7 @@ impl Workspace {
             | CommandId::Shortcuts
             | CommandId::OpenKeymap
             | CommandId::WorkspaceHome
+            | CommandId::Quit
             | CommandId::RestoreLastWorkspace
             | CommandId::Undo
             | CommandId::OpenThemeEditor

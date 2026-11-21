@@ -2139,18 +2139,39 @@ impl Workspace {
     }
 
     /// Persist current layout dimensions to settings.
-    pub(super) fn save_layout(&self, cx: &mut Context<Self>) {
-        if cx.try_global::<rgitui_settings::SettingsState>().is_some() {
-            let settings = cx.global_mut::<rgitui_settings::SettingsState>();
-            settings.settings_mut().layout.sidebar_width = self.layout.sidebar_width;
-            settings.settings_mut().layout.detail_panel_width = self.layout.detail_panel_width;
-            settings.settings_mut().layout.diff_viewer_height = self.layout.diff_viewer_height;
-            settings.settings_mut().layout.commit_input_height = self.layout.commit_input_height;
-            settings.settings_mut().layout.graph_hidden = self.layout.graph_hidden;
+    pub(super) fn save_layout(&self, cx: &mut App) {
+        if let Some(settings) = self.write_layout(cx) {
             if let Err(e) = settings.save() {
                 log::error!("Failed to save layout: {}", e);
             }
         }
+    }
+
+    /// Writes a layout save the debounce is still holding back, and waits for
+    /// it to reach disk.
+    ///
+    /// Runs as the app quits and as the workspace is dropped. Quitting within
+    /// the debounce of a resize would otherwise cancel the only save of it, and
+    /// the next launch would restore the old sizes. Blocking because the process
+    /// is about to exit, which would cut short the settings writer thread.
+    pub(super) fn flush_pending_layout_save(&mut self, cx: &mut App) {
+        if self.layout_save_task.take().is_none() {
+            return;
+        }
+        if let Some(settings) = self.write_layout(cx) {
+            if let Err(e) = settings.save_blocking() {
+                log::error!("Failed to save layout: {}", e);
+            }
+        }
+    }
+
+    /// Copies the current layout into the settings, returning them to be saved.
+    fn write_layout<'a>(&self, cx: &'a mut App) -> Option<&'a mut rgitui_settings::SettingsState> {
+        cx.try_global::<rgitui_settings::SettingsState>()?;
+        let layout = self.current_layout_settings();
+        let settings = cx.global_mut::<rgitui_settings::SettingsState>();
+        settings.set_layout(self.active_workspace_id.as_deref(), layout);
+        Some(settings)
     }
 }
 

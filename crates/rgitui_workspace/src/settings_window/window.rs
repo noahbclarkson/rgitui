@@ -29,7 +29,11 @@ impl SettingsWindow {
     /// Construct a `SettingsWindow`. Must be called inside the new window's
     /// `cx.open_window` callback so the inner `SettingsView` (and its
     /// `TextInput` children) bind to the new window's focus tree.
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    ///
+    /// Takes focus straight away: with nothing focused, gpui matches keystrokes
+    /// against the window root alone, which is outside the `SettingsWindow` key
+    /// context, so Esc and Quit would do nothing until the user clicked.
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let view = cx.new(SettingsView::new);
         view.update(cx, |v, cx| v.reload_from_settings(cx));
 
@@ -41,9 +45,12 @@ impl SettingsWindow {
                 cx.notify();
             });
 
+        let focus = cx.focus_handle();
+        focus.focus(window, cx);
+
         Self {
             view,
-            focus: cx.focus_handle(),
+            focus,
             last_saved_bounds: None,
             _theme_observer: theme_observer,
             _settings_observer: settings_observer,
@@ -121,9 +128,15 @@ impl SettingsWindow {
     /// so this is a safety net rather than the primary path — but closing a
     /// window is not a way to discard a pasted secret.
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_pending_edits(cx);
+        window.remove_window();
+    }
+
+    /// Saves any text field edit not yet committed. Quitting closes this window
+    /// without going through [`Self::close`], so it calls this first.
+    pub(crate) fn commit_pending_edits(&mut self, cx: &mut Context<Self>) {
         self.view
             .update(cx, |view, cx| view.commit_pending_edits(cx));
-        window.remove_window();
     }
 }
 

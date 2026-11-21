@@ -542,6 +542,12 @@ pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
             "File",
         ),
         PaletteCommand::new(
+            CommandId::Quit,
+            "File: Quit rgitui",
+            Some("Close every window and exit the application"),
+            "File",
+        ),
+        PaletteCommand::new(
             CommandId::WorkspaceHome,
             "Workspace: Home",
             Some("Return to the workspace home screen"),

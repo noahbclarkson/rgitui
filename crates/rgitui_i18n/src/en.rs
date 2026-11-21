@@ -31,6 +31,7 @@ macro_rules! english_messages {
 const _: () = crate::keys::assert_sorted(ENGLISH_MESSAGES);
 
 english_messages! {
+    "app_menu.quit" => "Quit rgitui",
     "bisect.bad" => "{count} bad",
     "bisect.decision.bad" => "bad",
     "bisect.decision.good" => "good",
