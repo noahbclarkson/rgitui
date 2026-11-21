@@ -397,6 +397,17 @@ impl Workspace {
         })
         .detach();
 
+        // Both, because either can come first. Quitting from the keyboard or
+        // the menu reaches `on_app_quit` with the workspace still alive; closing
+        // the main window drops the workspace, possibly before the quit runs.
+        cx.on_app_quit(|this, cx| {
+            this.flush_pending_layout_save(cx);
+            async {}
+        })
+        .detach();
+        cx.on_release(|this, cx| this.flush_pending_layout_save(cx))
+            .detach();
+
         let ai = cx.new(|_cx| AiGenerator::new());
         let github_data = cx.new(|_cx| crate::github_data_service::GithubDataService::new());
         let command_palette = cx.new(crate::CommandPalette::new);

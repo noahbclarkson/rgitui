@@ -977,6 +977,24 @@ impl SettingsState {
         self.settings.clean_exit
     }
 
+    /// Records the panel layout, both as the default for new windows and on the
+    /// saved workspace `workspace_id`.
+    ///
+    /// A launch that restores a saved workspace takes the layout from that
+    /// workspace, not the default, so updating only the default would lose a
+    /// resize whenever the app was closed without the tabs changing since.
+    pub fn set_layout(&mut self, workspace_id: Option<&str>, layout: LayoutSettings) {
+        if let Some(workspace) = workspace_id.and_then(|id| {
+            self.settings
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id == id)
+        }) {
+            workspace.layout = layout.clone();
+        }
+        self.settings.layout = layout;
+    }
+
     pub fn save_workspace_snapshot(
         &mut self,
         workspace_id: Option<&str>,
@@ -2103,6 +2121,60 @@ mod tests {
         assert_eq!(state.settings.workspaces.len(), 1);
         assert_eq!(state.settings.workspaces[0].repos.len(), 2);
         assert_eq!(state.settings.workspaces[0].active_repo_index, 1);
+    }
+
+    #[test]
+    fn set_layout_updates_the_default_and_the_saved_workspace() {
+        let mut state = test_settings_state();
+        let id = state
+            .save_workspace_snapshot(
+                None,
+                vec![PathBuf::from("/tmp/repo-a")],
+                0,
+                LayoutSettings::default(),
+            )
+            .expect("save_workspace_snapshot should return an id for non-empty repo lists");
+        let resized = LayoutSettings {
+            detail_panel_width: 412.0,
+            graph_hidden: true,
+            ..LayoutSettings::default()
+        };
+
+        state.set_layout(Some(&id), resized);
+
+        assert_eq!(state.settings.layout.detail_panel_width, 412.0);
+        assert!(state.settings.layout.graph_hidden);
+        assert_eq!(
+            state.settings.workspaces[0].layout.detail_panel_width,
+            412.0
+        );
+        assert!(state.settings.workspaces[0].layout.graph_hidden);
+    }
+
+    #[test]
+    fn set_layout_without_a_workspace_updates_only_the_default() {
+        let mut state = test_settings_state();
+        state.settings.workspaces = vec![StoredWorkspace {
+            id: "other".into(),
+            name: "Other".into(),
+            repos: vec![PathBuf::from("/tmp/other")],
+            active_repo_index: 0,
+            layout: LayoutSettings::default(),
+            created_at: Utc::now(),
+            last_opened_at: Utc::now(),
+        }];
+        let resized = LayoutSettings {
+            sidebar_width: 300.0,
+            ..LayoutSettings::default()
+        };
+
+        state.set_layout(None, resized);
+
+        assert_eq!(state.settings.layout.sidebar_width, 300.0);
+        assert_eq!(
+            state.settings.workspaces[0].layout.sidebar_width,
+            LayoutSettings::default().sidebar_width
+        );
     }
 
     #[test]
