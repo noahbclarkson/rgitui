@@ -529,7 +529,9 @@ impl Workspace {
         }
 
         let options = crate::settings_window_options(cx);
-        let opened = cx.open_window(options, |_, cx| cx.new(crate::SettingsWindow::new));
+        let opened = cx.open_window(options, |window, cx| {
+            cx.new(|cx| crate::SettingsWindow::new(window, cx))
+        });
 
         let handle = match opened {
             Ok(handle) => handle,

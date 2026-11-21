@@ -350,7 +350,7 @@ impl Workspace {
             CommandId::WorkspaceHome => {
                 self.go_home(cx);
             }
-            CommandId::Quit => crate::app_menu::quit(cx),
+            CommandId::Quit => crate::app::quit(cx),
             CommandId::RestoreLastWorkspace => {
                 self.restore_last_workspace(cx);
             }

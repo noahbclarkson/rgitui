@@ -335,7 +335,7 @@ fn main() {
 
         // Quit and the menu bar. After the keymap and translations, which the
         // menu reads its keystrokes and labels from.
-        rgitui_workspace::app_menu::init(cx);
+        rgitui_workspace::app::init(cx);
 
         // Apply saved theme from settings
         let saved_theme = cx
@@ -493,6 +493,7 @@ fn main() {
             })
             .expect("Failed to open window");
 
+        rgitui_workspace::app::quit_when_closed(window.window_id(), cx);
         start_perf_harness(window, cx);
     });
 }

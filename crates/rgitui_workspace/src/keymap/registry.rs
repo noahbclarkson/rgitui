@@ -226,7 +226,7 @@ commands! {
         // Live in both windows and while a dialog is open, as quitting is on
         // every platform. The workspace root handles it in the main window; in
         // the settings window, and from the macOS menu bar when no window has
-        // focus, it reaches the global handler `app_menu::init` installs.
+        // focus, it reaches the global handler `app::init` installs.
         /// Quit rgitui.
         Quit "secondary-q" in "Workspace || SettingsWindow";
     }
