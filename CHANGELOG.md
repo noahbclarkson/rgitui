@@ -14,6 +14,9 @@
   General → Pull with Uncommitted Changes* chooses between *Let Git decide*
   (the default), *AutoStash*, which makes every pull an autostash pull, and
   *Require a clean tree*, which is how Pull behaved before. (#100)
+- **Intel macOS release build.** Releases ship an `x86_64` `.dmg` again,
+  built on `macos-15-intel` beside the Apple Silicon one. Each architecture
+  is built natively on its own runner.
 
 ### Changed
 
