@@ -17,7 +17,7 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
   # Kept in step with `rust-toolchain.toml`; preflight asserts they match.
-  RUST_TOOLCHAIN: "1.97.1"
+  RUST_TOOLCHAIN: "1.100.0"
 
 jobs:
   # Pre-flight: resolve the version and check the tag matches it. This is all
