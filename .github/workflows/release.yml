@@ -332,10 +332,25 @@ jobs:
             rgitui-*.AppImage
             rgitui-*.deb
 
+  # Both architectures are built: `macos-15` is Apple Silicon hardware,
+  # `macos-15-intel` is x64 (the replacement for the retired `macos-13`).
+  # Each job builds natively for its own host, so no cross-compilation is
+  # involved. The arch suffix in the DMG name comes from
+  # RGITUI_MAC_TARGET via script/bundle-mac.sh.
   build-macos:
-    name: Build macOS (aarch64)
+    name: Build macOS (${{ matrix.arch }})
     needs: preflight
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            runner: macos-15
+            target: aarch64-apple-darwin
+          - arch: x86_64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout rgitui
         uses: actions/checkout@v7
@@ -346,13 +361,17 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
       - name: Build .app bundle and DMG
         env:
           RGITUI_VERSION: ${{ needs.preflight.outputs.version }}
+          RGITUI_MAC_TARGET: ${{ matrix.target }}
           RGITUI_MAC_CREATE_DMG: "1"
         run: |
           chmod +x script/bundle-mac.sh
@@ -361,8 +380,8 @@ jobs:
       - name: Verify DMG was produced
         env:
           VERSION: ${{ needs.preflight.outputs.version }}
+          ARCH: ${{ matrix.arch }}
         run: |
-          ARCH="$(uname -m)"
           DMG="target/rgitui-${VERSION}-${ARCH}-macos.dmg"
           if [ ! -f "$DMG" ]; then
             echo "::error::DMG $DMG not produced"
@@ -373,7 +392,7 @@ jobs:
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: macos-release
+          name: macos-${{ matrix.arch }}-release
           if-no-files-found: error
           path: target/rgitui-*-macos.dmg
 
